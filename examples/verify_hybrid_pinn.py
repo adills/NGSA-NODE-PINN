@@ -10,6 +10,7 @@ from src.nsga_pinn.evaluator import VectorizedPinnEvaluator
 from src.nsga_pinn.problem import NsgaPinnProblem
 from src.nsga_pinn.selector import ParetoSelector
 from src.nsga_pinn.orchestrator import HybridPinnOrchestrator
+from .third_party_burgers_runner import run_third_party_burgers, evaluate_third_party
 
 # --- Burgers' Equation Setup ---
 NU = 0.01 / np.pi
@@ -106,9 +107,11 @@ def generate_data(n_data, n_phys):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--adam_steps", type=int, default=100)
-    parser.add_argument("--nsga_gens", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--adam_steps", type=int, default=10)
+    parser.add_argument("--nsga_gens", type=int, default=50)
+    parser.add_argument("--compare_third_party", action="store_true")
+    parser.add_argument("--third_party_epochs", type=int, default=None)
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -152,6 +155,20 @@ def main():
     # Final eval
     final_loss = evaluator.evaluate_module(model)
     print(f"Final Loss: Data={final_loss[0].item():.6f}, Phys={final_loss[1].item():.6f}")
+
+    if args.compare_third_party:
+        third_party_epochs = args.epochs if args.third_party_epochs is None else args.third_party_epochs
+        pinn_third_party = run_third_party_burgers(
+            input_data=input_data,
+            target_data=target_data,
+            input_phys=input_phys,
+            device=device,
+            epochs=third_party_epochs
+        )
+        tp_data_loss, tp_phys_loss = evaluate_third_party(
+            pinn_third_party, input_data, target_data, input_phys
+        )
+        print(f"Third-party Loss: Data={tp_data_loss.item():.6f}, Phys={tp_phys_loss.item():.6f}")
 
 if __name__ == "__main__":
     main()
