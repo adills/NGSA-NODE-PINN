@@ -64,22 +64,28 @@ This document outlines the detailed requirements, tasks, and testing strategies 
 **Location:** `src/nsga_neuro_evolution_core/utils.py`
 
 *   **Action Items:**
-    1.  Implement context manager `nsga_evaluation_context(inputs)`:
-        *   **Weight Gradient Rule:** Disable gradients for weights (`torch.no_grad()` or `requires_grad=False`).
-        *   **Input Gradient Exception:** Explicitly enable gradients for the provided `inputs` tensor (`inputs.requires_grad_(True)`).
-        *   **Deconfliction:** This ensures that while `torch.autograd.grad` is used for physics residuals ($u_x, u_{xx}$), it creates a graph *only* connected to inputs, not weights. The weight optimization (NSGA) remains gradient-free.
-        *   **Safety:** Add a `torch.autograd.set_detect_anomaly(False)` or equivalent check to ensure no leakage.
+    1.  Implement context manager `nsga_evaluation_context(model: nn.Module, inputs: torch.Tensor)`:
+        *   **CRITICAL:** Do **NOT** use `torch.no_grad()`. Using `no_grad` prevents `autograd.grad` from working on inputs, which breaks PINN residual calculation.
+        *   **On Enter:**
+            1.  Save current `requires_grad` state of all `model.parameters()`.
+            2.  Set `param.requires_grad_(False)` for all model parameters (Freezes weights).
+            3.  Set `inputs.requires_grad_(True)` (Enables input sensitivity).
+        *   **On Exit:**
+            1.  Restore original `requires_grad` state to `model.parameters()` (usually True).
+        *   **Purpose:** This configuration forces the computational graph to track operations *only* for input derivatives, keeping the weights treated as constants. This explicitly deconflicts the inner-loop physics calculation from outer-loop weight updates.
     2.  Implement context manager `adam_update_context()`:
         *   Standard `torch.enable_grad()`.
 *   **Unit Tests (`tests/core/test_utils.py`):**
     *   **Test:** `test_nsga_context_behavior`:
         *   Create dummy model and input `x`.
-        *   Inside context:
+        *   Inside `with nsga_evaluation_context(model, x):`:
             *   Assert `model.weight.requires_grad` is False.
             *   Assert `x.requires_grad` is True.
             *   Compute `y = model(x)`.
-            *   Compute `grad(y, x)` succeeds (Physics Residual path).
-            *   Compute `grad(y, model.weight)` fails (Weight update path).
+            *   `torch.autograd.grad(y, x)` **Succeeds**.
+            *   `torch.autograd.grad(y, model.weight)` **Fails** (Expected).
+        *   Outside context:
+            *   Assert `model.weight.requires_grad` is True.
 
 ---
 
@@ -93,7 +99,7 @@ This document outlines the detailed requirements, tasks, and testing strategies 
     1.  Create class `VectorizedPinnEvaluator`.
     2.  Implement `evaluate_population(self, population: np.ndarray, mode='fitness') -> np.ndarray`:
         *   **Mode='fitness':**
-            *   Use `nsga_evaluation_context`.
+            *   Use `with nsga_evaluation_context(self.model_template, self.inputs):`.
             *   Vectorize (`vmap`) over population.
             *   **Strict Output:** Return `(DataLoss, PhysicsLoss)` as detached Tensors/Numpy arrays.
         *   **Mode='gradient':**
@@ -104,7 +110,7 @@ This document outlines the detailed requirements, tasks, and testing strategies 
         *   Compute Data Loss (MSE).
         *   Compute Physics Loss (Residual squared) using `torch.autograd.grad` w.r.t inputs.
 *   **Unit Tests (`tests/pinn/test_evaluator.py`):**
-    *   **Test:** `test_evaluator_fitness_mode`: Verify no grad on weights, yes grad on inputs.
+    *   **Test:** `test_evaluator_fitness_mode`: Verify no grad on weights, yes grad on inputs using the context manager.
     *   **Test:** `test_evaluator_output_shape`: `(Pop, 2)`.
 
 ### Task 1.2: Implement `NsgaPinnProblem`
@@ -154,7 +160,7 @@ This document outlines the detailed requirements, tasks, and testing strategies 
                 3.  **Convert:** Use `interface.genome_to_state_dict(best_individual)` (Single genome helper).
                 4.  **Load:** `current_model.load_state_dict(converted_weights)`.
                 5.  **Reset Optimizer:** Explicitly reset the ADAM optimizer state (clear buffers `m`, `v`) to avoid instability.
-                6.  **Deconflict:** Explicitly clear any lingering autograd states/caches if necessary (`torch.cuda.empty_cache()` optional).
+                6.  **Deconflict:** Explicitly clear any lingering autograd states/caches if necessary.
 *   **Validation (`examples/verify_hybrid_pinn.py`):**
     *   Solve Burgers' Equation.
     *   Compare `Hybrid` convergence vs `Pure ADAM`.

@@ -50,8 +50,9 @@ This document outlines the detailed requirements and tasks for implementing the 
     1.  Create class `VectorizedNodeEvaluator`.
     2.  Implement `evaluate_population(self, population: np.ndarray, mode='fitness')`:
         *   **Mode='fitness' (NSGA):**
-            *   Use `nsga_evaluation_context` (weights detached).
-            *   Solver: `torchode` standard solver.
+            *   Use `nsga_evaluation_context(self.model, self.inputs)` (weights detached).
+            *   **API Usage:** `term = torchode.ODETerm(self.dynamics, with_args=True)`.
+            *   **API Usage:** `sol = solver.solve(problem, args=batched_state_dict)`.
             *   **Strict No-Autograd:** Ensure the solve is "Forward-Only". No adjoint, no autograd graph. Return detached losses.
         *   **Mode='gradient' (ADAM):**
             *   Solver: `torchode` with **Direct Autograd** enabled (Backprop through time).
@@ -81,7 +82,9 @@ This document outlines the detailed requirements and tasks for implementing the 
 *   **Action Items:**
     1.  Create class `HybridNodeOrchestrator`.
     2.  Implement `train()` loop mirroring the PINN orchestrator.
-        *   **ADAM Phase:** Update `NodeDynamics` weights using `evaluate_population(mode='gradient')`.
+        *   **ADAM Phase:**
+            *   Ensure `model.requires_grad_(True)` (using `adam_update_context` or explicit call).
+            *   Update `NodeDynamics` weights using `evaluate_population(mode='gradient')`.
         *   **NSGA Phase:** Evolve population using `evaluate_population(mode='fitness')`.
         *   **Handoff Protocol:**
             1.  Select best "balanced" individual (Knee/Hybrid) from Pareto Front.
