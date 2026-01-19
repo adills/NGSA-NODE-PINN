@@ -550,7 +550,10 @@ The operationalization of NSGA-PINN requires moving beyond simple scripting to a
 * What hardware and population sizes are you targeting (single GPU vs multi-GPU), and what wall-clock budget per generation is acceptable? *ANSWER:* Initial target is a single GPU, single Mac MPS, and multi-CPU; later we will consider multi-GPU.
 
 ## **10. Next Steps**
-1. For developing tests, an example of `torchga` is provided in `examples/torchga_example.ipynb` so you can pull from there to find example model, data_inputs, loss_function, and data_outputs.
+1. For developing tests, 
+    * an example of `torchga` is provided in `examples/torchga_example.ipynb` so you can pull from there to find example model, data_inputs, loss_function, and data_outputs.
+    * an example Neural ODE can be found at https://www.geeksforgeeks.org/deep-learning/building-a-basic-neural-ode-model/. Note that this simple example does not use a hybrid model where physics ODE is combined with a weighted neural network.
+    * You may be able to find useful PINN example in https://www.geeksforgeeks.org/deep-learning/partial-differential-equations-pdes-in-deep-larning/ or use the same simple ODE for the PINN test from the Neural ODE example or vise versa or find a different internet example.
 2. Prototype a minimal PINN residual with `torch.func` + `vmap` + `autograd.grad` on your target Mac CPU or GPU to check support and memory. Fallback to CPU only. This step corresponds to Phase 1 Step 2 “Functional Physics Evaluator” and its verification benchmark.  The roadmap expects big vmap speedups, but that isn’t guaranteed for higher-order PINN residuals; a quick micro-benchmark should be treated as a gate before proceeding.
 3. Run a tiny NSGA-II loop on a toy PINN to measure CPU<->GPU transfer overhead with pymoo. This step aligns with Phase 1 Step 3 “Pymoo Orchestrator” verification.
 4. Validate torchode batch-parameter integration on a simple ODE and inspect per-element step size behavior and NaN handling. This step matches Phase 2 Step 1/2 verification tests for `NodeDynamics` and `NodeEvaluator`. Phase 2 JIT (`torch.compile`) is listed after the solver integration, but in practice you should validate torchode correctness first before trying to compile.
