@@ -43,7 +43,7 @@ class PytorchGenomeInterface:
             idx += count
 
             # Convert to tensor
-            state_dict[name] = torch.from_numpy(param_data).reshape(shape).to(self.model_template.parameters().__next__().device).type(self.model_template.parameters().__next__().dtype)
+            state_dict[name] = torch.from_numpy(param_data).reshape(shape).to(dtype=self.model_template.parameters().__next__().dtype, device=self.model_template.parameters().__next__().device)
 
         return state_dict
 
@@ -77,7 +77,7 @@ class PytorchGenomeInterface:
             batched_shape = (pop_size,) + shape
 
             # Convert to tensor
-            tensor_batch = torch.from_numpy(param_batch_flat).to(device).type(dtype)
+            tensor_batch = torch.from_numpy(param_batch_flat).to(device=device, dtype=dtype)
             state_dict[name] = tensor_batch.reshape(batched_shape)
 
         return state_dict

@@ -41,6 +41,7 @@ class VectorizedPinnEvaluator:
             raise ValueError(f"Unknown mode: {mode}")
 
     def _evaluate_fitness(self, population: np.ndarray):
+        population = population.astype(np.float32, copy=False)
         # Convert population to batched state_dict
         # Note: batch_to_state_dict returns tensors on device
         batched_params = self.interface.batch_to_state_dict(population)
