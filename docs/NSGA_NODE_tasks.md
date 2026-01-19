@@ -1,6 +1,6 @@
 # NSGA-NODE Development Tasks
 
-This document outlines the requirements and tasks for implementing the NSGA-NODE module. This module builds upon the `nsga_neuro_evolution_core` and introduces `torchode` for parallel differential equation solving.
+This document outlines the detailed requirements and tasks for implementing the NSGA-NODE module. It implements the **Hybrid NSGA-NODE** architecture, combining `torchode` based solvers with evolutionary strategies.
 
 **Tech Stack:**
 *   Python 3.12+
@@ -24,89 +24,85 @@ This document outlines the requirements and tasks for implementing the NSGA-NODE
         │   ├── __init__.py
         │   ├── dynamics.py
         │   ├── evaluator.py
-        │   └── problem.py
+        │   ├── problem.py
+        │   ├── orchestrator.py
         tests/
         ├── node/
         ```
 
 ### Task 2.2: Implement `NodeDynamicsWrapper`
-**Goal:** Create a dynamics function $f(t, y, \theta)$ that is compatible with `torchode` and batched parameters.
+**Goal:** Create a dynamics function $f(t, y, \theta)$ compatible with `torchode`.
 **Location:** `src/nsga_node/dynamics.py`
 
 *   **Action Items:**
     1.  Create class `NodeDynamicsWrapper(torch.nn.Module)`.
-    2.  Implement `__init__(self, neural_net_template, physics_f=None)`.
-        *   `physics_f` is the optional known physics term.
-    3.  Implement `forward(self, t, y, params)`:
-        *   **Critical:** This function must handle a *single* instance of parameters if `vmap` is applied externally, OR handle the batching internally.
-        *   *Design Decision:* `torchode` usually expects `forward(t, y, args)`. If `args` (params) has a batch dim, `torchode` vectorizes automatically over it?
-        *   *Refined Approach:* Implement `forward` to accept a *batch* of `y` and a *batch* of `params`.
-        *   Use `torch.func.functional_call` mapped over the batch dimension to evaluate the neural net part: $f_{NN}(y_i, t; \theta_i)$.
-        *   Combine with $f_{physics}(y_i, t)$ if present.
+    2.  Implement `forward(self, t, y, batched_state_dict)`:
+        *   **Batching Contract:** Explicitly handles a *batch* of `y` and a *batch* of `state_dict` (reconstructed via `genome_interface.batch_to_state_dict`).
+        *   Use `torch.func.functional_call` mapped over the batch dimension.
+        *   *Why Batched State Dict?* To avoid reconstructing the dict inside the solver loop (efficiency).
 *   **Unit Tests (`tests/node/test_dynamics.py`):**
-    *   **Test:** `test_dynamics_shape_consistency`
-        *   Batch size = 10. `y` shape `(10, State_Dim)`. `params` shape `(10, Param_Dim)`.
-        *   Call `forward(t, y, params)`.
-        *   Assert output shape is `(10, State_Dim)`.
+    *   **Test:** `test_dynamics_batched_state_dict_input`: Verify shape correctness when passed pre-batched dictionaries.
 
-### Task 2.3: Implement `VectorizedNodeEvaluator`
-**Goal:** Evaluate ODE trajectories for the entire population in parallel using `torchode`.
+### Task 2.3: Implement `VectorizedNodeEvaluator` (Hybrid Modes)
+**Goal:** Evaluate ODE trajectories. Must support "Fitness Mode" (Forward-only) and "Gradient Mode" (Adjoint/Backprop).
 **Location:** `src/nsga_node/evaluator.py`
 
 *   **Action Items:**
     1.  Create class `VectorizedNodeEvaluator`.
-    2.  Implement `__init__(self, genome_interface, t_eval, data_y, dynamics)`.
-    3.  Implement `evaluate_population(self, population: np.ndarray) -> np.ndarray`:
-        *   Convert `population` -> `batched_state_dict`.
-        *   Construct `torchode.ODETerm` using `dynamics` (ensure `with_args=True` or compatible API).
-        *   Setup `torchode.InitialValueProblem` with batched `y0` and batched `params` (as `args`).
-        *   Select Solver (e.g., `torchode.Dopri5` with `IntegralController`).
-        *   **Step:** `sol = solver.solve(problem)`
-        *   **Optimization:** Apply `torch.compile` to the solve call if possible (mark as Optional/Advanced task).
-        *   Compute Data Loss: MSE between `sol.ys` and `data_y`.
-        *   Compute Physics/Regularization Loss: e.g., Magnitude of NN correction term, or smoothness.
-        *   **Error Handling:** Catch NaNs (unstable dynamics) and assign penalty fitness.
+    2.  Implement `evaluate_population(self, population: np.ndarray, mode='fitness')`:
+        *   **Mode='fitness' (NSGA):**
+            *   Use `nsga_evaluation_context`.
+            *   Solver: `torchode` standard solver.
+            *   **Optimization:** Do *not* attach adjoint/autograd graph. `torch.no_grad()` on weights is active.
+            *   Return: `(DataLoss, PhysicsLoss)` detached.
+        *   **Mode='gradient' (ADAM):**
+            *   Solver: `torchode` with autograd enabled.
+            *   Return: `(DataLoss, PhysicsLoss)` attached to graph.
+    3.  **Objectives Definition:**
+        *   **Data Loss:** MSE(Trajectory).
+        *   **Physics/Correction Loss:** L2 Norm of the Neural Network output (Correction Term) over the trajectory. This encourages the model to rely on the known physics $f_{phys}$ and use the NN only when necessary.
 *   **Unit Tests (`tests/node/test_evaluator.py`):**
-    *   **Test:** `test_batch_solver_execution`
-        *   Simple ODE: $\dot{y} = -\theta y$.
-        *   Population: $\theta \in [0.1, 1.0]$.
-        *   Verify solver runs and produces distinct trajectories for each $\theta$.
-    *   **Test:** `test_nan_handling`
-        *   Inject a "bad" genome that causes divergence.
-        *   Verify evaluator returns penalty (inf) instead of crashing.
+    *   **Test:** `test_evaluator_modes`: Verify `grad_fn` is present in 'gradient' mode and absent in 'fitness' mode.
 
 ### Task 2.4: Implement `NsgaNodeProblem`
 **Goal:** `pymoo` integration for NODE.
 **Location:** `src/nsga_node/problem.py`
 
 *   **Action Items:**
-    1.  Create class `NsgaNodeProblem(pymoo.core.problem.Problem)`.
-    2.  Similar to `NsgaPinnProblem`, but uses `VectorizedNodeEvaluator`.
-    3.  Objectives:
-        *   Obj 1: Trajectory Error (Data fit).
-        *   Obj 2: Complexity/Regularization (e.g., L2 of weights, or integral of correction term).
-*   **Unit Tests:**
-    *   **Test:** Basic `pymoo` loop functional test.
+    1.  Create class `NsgaNodeProblem`.
+    2.  **Initialization:**
+        *   Support `current_adam_weights` and `sampling_radius`.
+    3.  **Objectives:** Explicitly label Obj 1 as "Data Error" and Obj 2 as "Correction Magnitude" (Physics Deviation).
 
-### Task 2.5: Validation - Hybrid Oscillator
-**Goal:** Verify NSGA-NODE on a Physics-Augmented task.
+### Task 2.5: Implement `HybridNodeOrchestrator`
+**Goal:** The master loop for NODE (ADAM <-> NSGA).
+**Location:** `src/nsga_node/orchestrator.py`
+
+*   **Action Items:**
+    1.  Create class `HybridNodeOrchestrator`.
+    2.  Implement `train()` loop mirroring the PINN orchestrator.
+        *   **ADAM Phase:** Update `NodeDynamics` weights using `evaluate_population(mode='gradient')` (Batch size 1 or small batch).
+        *   **NSGA Phase:** Evolve population using `evaluate_population(mode='fitness')`.
+        *   **Handoff:** Select best "balanced" individual (Knee/Hybrid) to reset ADAM weights.
+*   **Unit Tests:**
+    *   **Test:** `test_hybrid_loop_handoff`: Verify weights change after NSGA phase.
+
+### Task 2.6: Validation - Hybrid Oscillator (Identifiability)
+**Goal:** Verify NSGA-NODE on a well-posed problem.
 **Location:** `examples/verify_node_oscillator.py`
 
 *   **Action Items:**
-    1.  Problem: Damped Harmonic Oscillator where the damping term is unknown.
-        *   True System: $\ddot{x} + c \dot{x} + k x = 0$.
-        *   Physics Model: $\ddot{x} + k x = u_{NN}(\dot{x}, x)$.
-    2.  Data: Generate trajectories with fixed $c, k$.
-    3.  Run `NSGA-NODE`.
-    4.  **Validation Check:**
-        *   Verify Pareto Front exists (Accuracy vs Neural Net Magnitude).
-        *   Verify the "Best Fit" model recovers the correct damping dynamics.
-*   **Run Configuration:**
-    *   Support `--device` argument.
-    *   Log solve times.
+    1.  **Problem Definition:**
+        *   True System: $\ddot{x} + 0.5 \dot{x} + 2.0 x = 0$ (Damped Oscillator).
+        *   Physics Model (Incomplete): $\ddot{x} + 2.0 x = u_{NN}(\dot{x})$.
+        *   *Constraint:* We assume Mass (1.0) and Stiffness (2.0) are known, Damping is unknown.
+    2.  **Identifiability:** This setup ensures the NN *must* learn the damping term $-0.5\dot{x}$ to minimize Data Loss, while the "Correction Magnitude" objective encourages it to be as small as possible (avoiding overfitting noise).
+    3.  **Run Hybrid Training:**
+        *   Check if the NN converges to $-0.5\dot{x}$ (linear relationship).
+        *   Verify "Correction Loss" prevents the NN from learning high-frequency noise in the data.
 
 ---
 
-## Testing Strategy (NODE Specific)
-*   **Unit Tests:** Focus on the shape correctness of the "Batch-over-Parameters" logic. `torchode` API can be tricky with argument passing; tests must isolate this.
-*   **Validation:** Start with very small time horizons ($T=1.0$) to prevent massive divergence during initial debugging.
+## Testing Strategy
+*   **Unit Tests:** Verify `torchode` integration in both autograd and no-grad contexts.
+*   **Validation:** Ensure the validation problem is "Physically Augmented" (Incomplete Physics + NN) rather than "Pure Blackbox", as this highlights the multi-objective benefit (Tradeoff: Fit vs Trust in Physics).

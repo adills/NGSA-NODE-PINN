@@ -1,6 +1,6 @@
 # NSGA-PINN Development Tasks
 
-This document outlines the detailed requirements, tasks, and testing strategies for setting up the project and implementing the NSGA-PINN module. It assumes a modular architecture with a shared core.
+This document outlines the detailed requirements, tasks, and testing strategies for setting up the project and implementing the NSGA-PINN module. It implements the **Hybrid NSGA-PINN** architecture (ADAM outer loop, NSGA inner loop) as defined in DOI 10.3390/a16040194.
 
 **Tech Stack:**
 *   Python 3.12+
@@ -31,14 +31,12 @@ This document outlines the detailed requirements, tasks, and testing strategies 
         ├── nsga_pinn/
         │   ├── __init__.py
         │   ├── evaluator.py
-        │   └── problem.py
+        │   ├── problem.py
+        │   └── orchestrator.py
         tests/
         ├── core/
         └── pinn/
         ```
-*   **Verification:**
-    *   Run `uv sync` to install dependencies.
-    *   Verify `import torch`, `import pymoo` work in a test script.
 
 ### Task 0.2: Implement `PytorchGenomeInterface`
 **Goal:** Create the bridge between flat genetic vectors and hierarchical PyTorch state dictionaries.
@@ -52,92 +50,108 @@ This document outlines the detailed requirements, tasks, and testing strategies 
     4.  Implement `batch_to_state_dict(self, population: np.ndarray) -> Dict[str, torch.Tensor]`:
         *   Input: `(Pop_Size, Num_Params)`
         *   Output: `state_dict` where each tensor has shape `(Pop_Size, ...original_dims...)`.
-        *   *Note:* Ensure efficient reshaping without unnecessary copying.
 *   **Unit Tests (`tests/core/test_interface.py`):**
-    *   **Test:** `test_flatten_unflatten_consistency`
-        *   Create a simple CNN or MLP model.
-        *   Flatten it to genome.
-        *   Pass genome (batch size 1) to `batch_to_state_dict`.
-        *   Compare original `state_dict` vs reconstructed. Assert strict equality (`torch.allclose`).
-    *   **Test:** `test_batch_unflatten_shapes`
-        *   Input a random population matrix of size `(10, Num_Params)`.
-        *   Verify output tensors all have leading dimension 10.
+    *   **Test:** `test_flatten_unflatten_consistency` (Round-trip check).
+    *   **Test:** `test_batch_unflatten_shapes` (Leading batch dim check).
 
-### Task 0.3: Implement Vectorization Utilities
-**Goal:** Helper functions for `torch.func` operations.
+### Task 0.3: Implement Scoped Gradient Contexts
+**Goal:** Helper context managers to control gradient flow for Hybrid training.
 **Location:** `src/nsga_neuro_evolution_core/utils.py`
 
 *   **Action Items:**
-    1.  Implement a helper to wrap `torch.func.functional_call` for batched execution.
-    2.  Implement a context manager/decorator for `torch.no_grad()` to be used during evaluation (except where gradients are explicitly needed for physics residuals).
+    1.  Implement context manager `nsga_evaluation_context()`:
+        *   **Disable** gradients for Model Parameters (Weights).
+        *   **Enable** gradients for Inputs (Required for Physics Residuals $u_x, u_{xx}$).
+        *   *Implementation Hint:* Use `torch.no_grad()` generally, but `torch.set_grad_enabled(True)` strictly around the residual calculation if needed, or rely on `inputs.requires_grad_(True)` functioning within `functional_call` if weights are detached.
+    2.  Implement context manager `adam_update_context()`:
+        *   Standard `torch.enable_grad()`.
 *   **Unit Tests (`tests/core/test_utils.py`):**
-    *   **Test:** `test_functional_call_batching`
-        *   Verify `vmap` over parameters works for a simple function.
+    *   **Test:** `test_nsga_context_behavior`:
+        *   Create dummy model and input `x`.
+        *   Inside context:
+            *   Assert `model.weight.requires_grad` is False (or effective grad is None).
+            *   Compute `y = model(x)`.
+            *   Compute `grad(y, x)` succeeds (Physics Residual path).
+            *   Compute `grad(y, model.weight)` fails/returns None (Weight update path).
 
 ---
 
 ## Phase 1: NSGA-PINN Implementation (`nsga_pinn`)
 
-### Task 1.1: Implement `VectorizedPinnEvaluator`
-**Goal:** The core engine that computes Data Loss and Physics Loss for the entire population on GPU/CPU.
+### Task 1.1: Implement `VectorizedPinnEvaluator` (Hybrid Modes)
+**Goal:** The core engine that computes Data Loss and Physics Loss. Must support "Fitness Mode" (NSGA) and "Gradient Mode" (ADAM/Debug).
 **Location:** `src/nsga_pinn/evaluator.py`
 
 *   **Action Items:**
     1.  Create class `VectorizedPinnEvaluator`.
-    2.  Implement `__init__(self, genome_interface, data_points, collocation_points, pde_residual_fn)`.
-    3.  Implement `evaluate_population(self, population: np.ndarray) -> np.ndarray`:
-        *   Convert `population` to `batched_state_dict` using `genome_interface`.
-        *   Define `compute_loss(params, inputs)`:
-            *   Use `torch.func.functional_call` to evaluate model with `params`.
-            *   Compute Data Loss (MSE).
-            *   Compute Physics Loss (Residual squared) using `torch.autograd.grad` (or `torch.func.grad`).
-        *   Use `torch.vmap` to vectorize `compute_loss` over the population dimension (dim 0).
-        *   **Crucial:** Handle the mix of `no_grad` (for weights) and `grad` (for input coordinates x, t).
+    2.  Implement `evaluate_population(self, population: np.ndarray, mode='fitness') -> np.ndarray`:
+        *   **Mode='fitness':**
+            *   Use `nsga_evaluation_context`.
+            *   Vectorize (`vmap`) over population.
+            *   Return: `(DataLoss, PhysicsLoss)` detached from graph.
+        *   **Mode='gradient':**
+            *   Used for standard ADAM training (single individual) or debugging.
+            *   Enable full autograd.
+            *   Return: `(DataLoss, PhysicsLoss)` with graph attached.
+    3.  Define `compute_loss(params, inputs)`:
+        *   Compute Data Loss (MSE).
+        *   Compute Physics Loss (Residual squared) using `torch.autograd.grad` w.r.t inputs.
 *   **Unit Tests (`tests/pinn/test_evaluator.py`):**
-    *   **Test:** `test_evaluator_output_shape`
-        *   Mock a simple PDE (e.g., $u_x = 0$).
-        *   Pass population size 5.
-        *   Assert output is `(5, 2)` (Data Loss, Physics Loss).
-    *   **Test:** `test_evaluator_correctness_serial`
-        *   Compare vector output against a standard `for` loop calculation for 3 specific genomes. Ensure results match.
+    *   **Test:** `test_evaluator_fitness_mode`: Verify no grad on weights, yes grad on inputs.
+    *   **Test:** `test_evaluator_output_shape`: `(Pop, 2)`.
 
-### Task 1.2: Implement `NsgaPinnProblem` Orchestrator
+### Task 1.2: Implement `NsgaPinnProblem`
 **Goal:** The `pymoo` Problem definition.
 **Location:** `src/nsga_pinn/problem.py`
 
 *   **Action Items:**
     1.  Create class `NsgaPinnProblem(pymoo.core.problem.Problem)`.
-    2.  Implement `__init__(self, model_template, evaluator, bounds=None)`.
-        *   Determine `n_var` from `genome_interface`.
-        *   Set `n_obj=2`.
-    3.  Implement `_evaluate(self, x, out, *args, **kwargs)`:
-        *   Call `evaluator.evaluate_population(x)`.
-        *   Assign results to `out["F"]`.
-*   **Unit Tests (`tests/pinn/test_problem.py`):**
-    *   **Test:** `test_pymoo_integration`
-        *   Instantiate `NsgaPinnProblem`.
-        *   Run one generation of `NSGA2` with population size 4.
-        *   Verify no runtime errors and valid fitness values.
+    2.  **Initialization Policy:**
+        *   Accept `current_adam_weights` (genome) in `__init__`.
+        *   Define `bounds`: e.g., `[current - 1.0, current + 1.0]` or fixed global bounds `[-10, 10]`.
+        *   *Recommendation:* Implement `sampling` strategy that initializes population around `current_adam_weights` (Gaussian perturbation).
+    3.  Implement `_evaluate`:
+        *   Call `evaluator.evaluate_population(x, mode='fitness')`.
+*   **Unit Tests:**
+    *   **Test:** `test_problem_sampling_around_adam`: Verify initial population is centered on provided weights.
 
-### Task 1.3: Validation - Burgers' Equation
-**Goal:** Verify the system solves a real PDE.
-**Location:** `examples/verify_pinn_burgers.py`
+### Task 1.3: Implement `ParetoSelector`
+**Goal:** Logic to select the best candidate from the Pareto Front to hand back to ADAM.
+**Location:** `src/nsga_pinn/selector.py`
 
 *   **Action Items:**
-    1.  Define Burgers' Equation Residual: $u_t + u u_x - (0.01/\pi) u_{xx} = 0$.
-    2.  Setup Data: Generate synthetic exact solution data.
-    3.  Setup Model: MLP (e.g., 3 layers, 20 neurons, Tanh).
-    4.  Run `NSGA-II` for ~50-100 generations.
-    5.  **Validation Check:**
-        *   Check that the Pareto Front is non-trivial (trade-off exists).
-        *   Select "Best Data Fit" individual and verify MSE < Threshold.
-        *   Select "Best Physics Fit" individual and verify Residual < Threshold.
-*   **Run Configuration:**
-    *   Allow command line arg `--device` to select 'cpu', 'cuda', or 'mps'.
-    *   Default to 'cpu'.
+    1.  Create class `ParetoSelector`.
+    2.  Implement methods:
+        *   `select_best_data(front, F)`: Returns individual with min Data Loss.
+        *   `select_best_physics(front, F)`: Returns individual with min Physics Loss.
+        *   `select_knee_point(front, F)`: Returns individual at the "elbow" (max distance from line connecting extremes).
+        *   `select_hybrid(front, F, alpha=0.5)`: Returns min `alpha*Data + (1-alpha)*Physics`.
+*   **Unit Tests:**
+    *   **Test:** `test_knee_point_selection`: Provide synthetic convex front, verify knee selection.
+
+### Task 1.4: Implement `HybridPinnOrchestrator`
+**Goal:** The master loop implementing the paper's contract.
+**Location:** `src/nsga_pinn/orchestrator.py`
+
+*   **Action Items:**
+    1.  Create class `HybridPinnOrchestrator`.
+    2.  Implement `train(self, epochs, adam_steps_per_epoch, nsga_gens_per_epoch)`:
+        *   **Outer Loop (Epochs):**
+            *   **Step A (ADAM):** Run standard gradient descent on `current_model` for `adam_steps_per_epoch`.
+            *   **Step B (NSGA - The "Jump"):**
+                *   Initialize `NsgaPinnProblem` centered on `current_model`.
+                *   Run `pymoo.NSGA2` for `nsga_gens_per_epoch`.
+            *   **Step C (Handoff):**
+                *   Get Pareto Front.
+                *   Use `ParetoSelector` (e.g., knee point or hybrid) to pick `best_individual`.
+                *   Update `current_model` weights with `best_individual`.
+*   **Validation (`examples/verify_hybrid_pinn.py`):**
+    *   Solve Burgers' Equation.
+    *   Compare `Hybrid` convergence vs `Pure ADAM`.
+    *   Verify "Jump" in loss curves where NSGA finds better basins.
 
 ---
 
 ## Testing Strategy
-*   **Unit Tests:** Run with `pytest`. Must pass on CPU. Mock heavy GPU ops where possible.
-*   **Validation Tests:** Python scripts in `examples/`. Should log timing to demonstrate `vmap` speedup if run on GPU.
+*   **Unit Tests:** Focus on gradient context safety and selection logic.
+*   **Validation:** Explicitly check the "Handoff" mechanism—ensure the model weights actually update after the NSGA phase.
