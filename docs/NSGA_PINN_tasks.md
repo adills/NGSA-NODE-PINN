@@ -50,19 +50,25 @@ This document outlines the detailed requirements, tasks, and testing strategies 
     4.  Implement `batch_to_state_dict(self, population: np.ndarray) -> Dict[str, torch.Tensor]`:
         *   Input: `(Pop_Size, Num_Params)`
         *   Output: `state_dict` where each tensor has shape `(Pop_Size, ...original_dims...)`.
+    5.  Implement `genome_to_state_dict(self, individual: np.ndarray) -> Dict[str, torch.Tensor]`:
+        *   Input: `(Num_Params,)` (1D array).
+        *   Output: Standard `state_dict` (unbatched) suitable for `model.load_state_dict`.
+        *   *Note:* Handle shape checking (1D vs 2D) to prevent bugs.
 *   **Unit Tests (`tests/core/test_interface.py`):**
-    *   **Test:** `test_flatten_unflatten_consistency` (Round-trip check).
-    *   **Test:** `test_batch_unflatten_shapes` (Leading batch dim check).
+    *   **Test:** `test_flatten_unflatten_consistency`: Round-trip check.
+    *   **Test:** `test_batch_unflatten_shapes`: Leading batch dim check.
+    *   **Test:** `test_single_genome_unflatten`: Verify `genome_to_state_dict` returns unbatched tensors.
 
 ### Task 0.3: Implement Scoped Gradient Contexts
 **Goal:** Helper context managers to control gradient flow for Hybrid training.
 **Location:** `src/nsga_neuro_evolution_core/utils.py`
 
 *   **Action Items:**
-    1.  Implement context manager `nsga_evaluation_context()`:
-        *   **Weight Gradient Rule:** strictly `torch.no_grad()`. NSGA must never compute weight gradients.
-        *   **Input Gradient Exception:** Explicitly enable gradients *only* for input coordinates (x, t) to allow computation of physics residuals (e.g., $u_x$).
-        *   *Implementation:* Use `torch.autograd.grad(create_graph=False)` inside the context to ensure the computation graph for weights is not built, while allowing derivative w.r.t inputs.
+    1.  Implement context manager `nsga_evaluation_context(inputs)`:
+        *   **Weight Gradient Rule:** Disable gradients for weights (`torch.no_grad()` or `requires_grad=False`).
+        *   **Input Gradient Exception:** Explicitly enable gradients for the provided `inputs` tensor (`inputs.requires_grad_(True)`).
+        *   **Deconfliction:** This ensures that while `torch.autograd.grad` is used for physics residuals ($u_x, u_{xx}$), it creates a graph *only* connected to inputs, not weights. The weight optimization (NSGA) remains gradient-free.
+        *   **Safety:** Add a `torch.autograd.set_detect_anomaly(False)` or equivalent check to ensure no leakage.
     2.  Implement context manager `adam_update_context()`:
         *   Standard `torch.enable_grad()`.
 *   **Unit Tests (`tests/core/test_utils.py`):**
@@ -70,6 +76,7 @@ This document outlines the detailed requirements, tasks, and testing strategies 
         *   Create dummy model and input `x`.
         *   Inside context:
             *   Assert `model.weight.requires_grad` is False.
+            *   Assert `x.requires_grad` is True.
             *   Compute `y = model(x)`.
             *   Compute `grad(y, x)` succeeds (Physics Residual path).
             *   Compute `grad(y, model.weight)` fails (Weight update path).
@@ -88,7 +95,7 @@ This document outlines the detailed requirements, tasks, and testing strategies 
         *   **Mode='fitness':**
             *   Use `nsga_evaluation_context`.
             *   Vectorize (`vmap`) over population.
-            *   **Strict Output:** Return `(DataLoss, PhysicsLoss)` as detached Tensors/Numpy arrays. No graph attached.
+            *   **Strict Output:** Return `(DataLoss, PhysicsLoss)` as detached Tensors/Numpy arrays.
         *   **Mode='gradient':**
             *   Used for standard ADAM training (single individual) or debugging.
             *   Enable full autograd.
@@ -108,8 +115,8 @@ This document outlines the detailed requirements, tasks, and testing strategies 
     1.  Create class `NsgaPinnProblem(pymoo.core.problem.Problem)`.
     2.  **Initialization Policy:**
         *   Accept `current_adam_weights` (genome) in `__init__`.
-        *   Define `bounds`: e.g., `[current - 1.0, current + 1.0]` or fixed global bounds `[-10, 10]`.
-        *   *Recommendation:* Implement `sampling` strategy that initializes population around `current_adam_weights` (Gaussian perturbation).
+        *   Define `bounds`: e.g., `[current - 1.0, current + 1.0]` or fixed global bounds.
+        *   *Recommendation:* Implement `sampling` strategy that initializes population around `current_adam_weights`.
     3.  Implement `_evaluate`:
         *   Call `evaluator.evaluate_population(x, mode='fitness')`.
 *   **Unit Tests:**
@@ -124,7 +131,7 @@ This document outlines the detailed requirements, tasks, and testing strategies 
     2.  Implement methods:
         *   `select_best_data(front, F)`: Returns individual with min Data Loss.
         *   `select_best_physics(front, F)`: Returns individual with min Physics Loss.
-        *   `select_knee_point(front, F)`: Returns individual at the "elbow" (max distance from line connecting extremes).
+        *   `select_knee_point(front, F)`: Returns individual at the "elbow".
         *   `select_hybrid(front, F, alpha=0.5)`: Returns min `alpha*Data + (1-alpha)*Physics`.
 *   **Unit Tests:**
     *   **Test:** `test_knee_point_selection`: Provide synthetic convex front, verify knee selection.
@@ -144,9 +151,10 @@ This document outlines the detailed requirements, tasks, and testing strategies 
             *   **Step C (Handoff Protocol):**
                 1.  Get Pareto Front from NSGA result.
                 2.  Use `ParetoSelector` to pick `best_individual` (genome).
-                3.  **Convert:** Use `interface.batch_to_state_dict` to convert genome to PyTorch tensors.
+                3.  **Convert:** Use `interface.genome_to_state_dict(best_individual)` (Single genome helper).
                 4.  **Load:** `current_model.load_state_dict(converted_weights)`.
-                5.  **Reset Optimizer:** Explicitly reset the ADAM optimizer state (clear momentum buffers `m` and `v`) to avoid instability from stale history.
+                5.  **Reset Optimizer:** Explicitly reset the ADAM optimizer state (clear buffers `m`, `v`) to avoid instability.
+                6.  **Deconflict:** Explicitly clear any lingering autograd states/caches if necessary (`torch.cuda.empty_cache()` optional).
 *   **Validation (`examples/verify_hybrid_pinn.py`):**
     *   Solve Burgers' Equation.
     *   Compare `Hybrid` convergence vs `Pure ADAM`.
