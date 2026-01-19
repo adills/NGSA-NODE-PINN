@@ -51,12 +51,11 @@ This document outlines the detailed requirements and tasks for implementing the 
     1.  Create class `VectorizedNodeEvaluator`.
     2.  Implement `evaluate_population(self, population: np.ndarray, mode='fitness')`:
         *   **Mode='fitness' (NSGA):**
-            *   Use `nsga_evaluation_context`.
+            *   Use `nsga_evaluation_context` (weights detached).
             *   Solver: `torchode` standard solver.
-            *   **Optimization:** Do *not* attach adjoint/autograd graph. `torch.no_grad()` on weights is active.
-            *   Return: `(DataLoss, PhysicsLoss)` detached.
+            *   **Strict No-Autograd:** Ensure the solve is "Forward-Only". No adjoint method is used. No graph is built. Return detached losses.
         *   **Mode='gradient' (ADAM):**
-            *   Solver: `torchode` with autograd enabled.
+            *   Solver: `torchode` with **Adjoint** or **Autograd** enabled.
             *   Return: `(DataLoss, PhysicsLoss)` attached to graph.
     3.  **Objectives Definition:**
         *   **Data Loss:** MSE(Trajectory).
@@ -81,11 +80,15 @@ This document outlines the detailed requirements and tasks for implementing the 
 *   **Action Items:**
     1.  Create class `HybridNodeOrchestrator`.
     2.  Implement `train()` loop mirroring the PINN orchestrator.
-        *   **ADAM Phase:** Update `NodeDynamics` weights using `evaluate_population(mode='gradient')` (Batch size 1 or small batch).
+        *   **ADAM Phase:** Update `NodeDynamics` weights using `evaluate_population(mode='gradient')`.
         *   **NSGA Phase:** Evolve population using `evaluate_population(mode='fitness')`.
-        *   **Handoff:** Select best "balanced" individual (Knee/Hybrid) to reset ADAM weights.
+        *   **Handoff Protocol:**
+            1.  Select best "balanced" individual (Knee/Hybrid) from Pareto Front.
+            2.  **Convert:** Use `interface.batch_to_state_dict` to transform the genome into a state dict.
+            3.  **Load:** `dynamics.load_state_dict(...)`.
+            4.  **Reset Optimizer:** Clear ADAM state buffers (momentum/variance) to prevent stale state issues.
 *   **Unit Tests:**
-    *   **Test:** `test_hybrid_loop_handoff`: Verify weights change after NSGA phase.
+    *   **Test:** `test_hybrid_loop_handoff`: Verify weights change after NSGA phase and optimizer state is reset.
 
 ### Task 2.6: Validation - Hybrid Oscillator (Identifiability)
 **Goal:** Verify NSGA-NODE on a well-posed problem.

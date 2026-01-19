@@ -60,19 +60,19 @@ This document outlines the detailed requirements, tasks, and testing strategies 
 
 *   **Action Items:**
     1.  Implement context manager `nsga_evaluation_context()`:
-        *   **Disable** gradients for Model Parameters (Weights).
-        *   **Enable** gradients for Inputs (Required for Physics Residuals $u_x, u_{xx}$).
-        *   *Implementation Hint:* Use `torch.no_grad()` generally, but `torch.set_grad_enabled(True)` strictly around the residual calculation if needed, or rely on `inputs.requires_grad_(True)` functioning within `functional_call` if weights are detached.
+        *   **Weight Gradient Rule:** strictly `torch.no_grad()`. NSGA must never compute weight gradients.
+        *   **Input Gradient Exception:** Explicitly enable gradients *only* for input coordinates (x, t) to allow computation of physics residuals (e.g., $u_x$).
+        *   *Implementation:* Use `torch.autograd.grad(create_graph=False)` inside the context to ensure the computation graph for weights is not built, while allowing derivative w.r.t inputs.
     2.  Implement context manager `adam_update_context()`:
         *   Standard `torch.enable_grad()`.
 *   **Unit Tests (`tests/core/test_utils.py`):**
     *   **Test:** `test_nsga_context_behavior`:
         *   Create dummy model and input `x`.
         *   Inside context:
-            *   Assert `model.weight.requires_grad` is False (or effective grad is None).
+            *   Assert `model.weight.requires_grad` is False.
             *   Compute `y = model(x)`.
             *   Compute `grad(y, x)` succeeds (Physics Residual path).
-            *   Compute `grad(y, model.weight)` fails/returns None (Weight update path).
+            *   Compute `grad(y, model.weight)` fails (Weight update path).
 
 ---
 
@@ -88,7 +88,7 @@ This document outlines the detailed requirements, tasks, and testing strategies 
         *   **Mode='fitness':**
             *   Use `nsga_evaluation_context`.
             *   Vectorize (`vmap`) over population.
-            *   Return: `(DataLoss, PhysicsLoss)` detached from graph.
+            *   **Strict Output:** Return `(DataLoss, PhysicsLoss)` as detached Tensors/Numpy arrays. No graph attached.
         *   **Mode='gradient':**
             *   Used for standard ADAM training (single individual) or debugging.
             *   Enable full autograd.
@@ -141,10 +141,12 @@ This document outlines the detailed requirements, tasks, and testing strategies 
             *   **Step B (NSGA - The "Jump"):**
                 *   Initialize `NsgaPinnProblem` centered on `current_model`.
                 *   Run `pymoo.NSGA2` for `nsga_gens_per_epoch`.
-            *   **Step C (Handoff):**
-                *   Get Pareto Front.
-                *   Use `ParetoSelector` (e.g., knee point or hybrid) to pick `best_individual`.
-                *   Update `current_model` weights with `best_individual`.
+            *   **Step C (Handoff Protocol):**
+                1.  Get Pareto Front from NSGA result.
+                2.  Use `ParetoSelector` to pick `best_individual` (genome).
+                3.  **Convert:** Use `interface.batch_to_state_dict` to convert genome to PyTorch tensors.
+                4.  **Load:** `current_model.load_state_dict(converted_weights)`.
+                5.  **Reset Optimizer:** Explicitly reset the ADAM optimizer state (clear momentum buffers `m` and `v`) to avoid instability from stale history.
 *   **Validation (`examples/verify_hybrid_pinn.py`):**
     *   Solve Burgers' Equation.
     *   Compare `Hybrid` convergence vs `Pure ADAM`.
@@ -154,4 +156,4 @@ This document outlines the detailed requirements, tasks, and testing strategies 
 
 ## Testing Strategy
 *   **Unit Tests:** Focus on gradient context safety and selection logic.
-*   **Validation:** Explicitly check the "Handoff" mechanism—ensure the model weights actually update after the NSGA phase.
+*   **Validation:** Explicitly check the "Handoff" mechanism—ensure the model weights actually update after the NSGA phase and optimizer buffers are cleared.
