@@ -112,6 +112,7 @@ def main():
     parser.add_argument("--nsga_gens", type=int, default=50)
     parser.add_argument("--compare_third_party", action="store_true")
     parser.add_argument("--third_party_epochs", type=int, default=None)
+    parser.add_argument("--third_party_f_mntr", type=int, default=None)
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -163,7 +164,8 @@ def main():
             target_data=target_data,
             input_phys=input_phys,
             device=device,
-            epochs=third_party_epochs
+            epochs=third_party_epochs,
+            f_mntr=args.third_party_f_mntr
         )
         tp_data_loss, tp_phys_loss = evaluate_third_party(
             pinn_third_party, input_data, target_data, input_phys

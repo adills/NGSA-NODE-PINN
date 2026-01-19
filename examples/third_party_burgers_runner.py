@@ -60,6 +60,7 @@ def run_third_party_burgers(
     epochs: Optional[int] = None,
     batch: Optional[int] = None,
     tol: Optional[float] = None,
+    f_mntr: Optional[int] = None,
     third_party_dir: Optional[Path] = None,
     val_frac: float = 0.2,
     seed: int = 0,
@@ -93,6 +94,10 @@ def run_third_party_burgers(
         c_tol = tol
     if device is not None:
         device_tp = device
+    if f_mntr is not None:
+        f_mntr = int(f_mntr)
+    elif n_epch < 20:
+        f_mntr = 1
 
     data = input_data.detach().cpu()
     targets = target_data.detach().cpu()
