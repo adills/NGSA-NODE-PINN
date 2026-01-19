@@ -161,6 +161,15 @@ This document outlines the detailed requirements, tasks, and testing strategies 
                 4.  **Load:** `current_model.load_state_dict(converted_weights)`.
                 5.  **Reset Optimizer:** Explicitly reset the ADAM optimizer state (clear buffers `m`, `v`) to avoid instability.
                 6.  **Deconflict:** Explicitly clear any lingering autograd states/caches if necessary.
+
+#### 1.4.2 Adaptive ADAM/NSGA Schedule (Optional)
+**Goal:** Adjust `adam_steps_per_epoch` based on observed performance to balance exploration (NSGA) and refinement (ADAM).
+
+*   **Condition A (NSGA strong, ADAM weak):**
+    *   If NSGA consistently improves the best Pareto score while ADAM improvement is near zero, **reduce** `adam_steps_per_epoch` (down to a minimum).
+*   **Condition B (NSGA stagnates or noisy):**
+    *   If NSGA improvement is below a threshold for multiple epochs **or** the Pareto front becomes noisy, **increase** `adam_steps_per_epoch`.
+    *   Optionally run **ADAM-only warm-up** for a few epochs (skip NSGA) before re-enabling NSGA.
 *   **Validation (`examples/verify_hybrid_pinn.py`):**
     *   Solve Burgers' Equation.
     *   Compare `Hybrid` convergence vs `Pure ADAM`.

@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import time
+from os.path import join
 from torch.func import vmap, functional_call, jacrev, jacfwd
 
 from src.nsga_neuro_evolution_core.interface import PytorchGenomeInterface
@@ -104,14 +105,61 @@ def generate_data(n_data, n_phys):
         torch.tensor(inputs_phys, dtype=torch.float32)
     )
 
+def plot_comparison(input_data, target_data, nsga_model, pinn_model=None, 
+                    output_path=join("examples", "pinn_comparison.png")):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise RuntimeError("matplotlib is required for plot_comparison") from exc
+
+    nsga_model.eval()
+    with torch.no_grad():
+        nsga_preds = nsga_model(input_data).detach()
+
+    if pinn_model is None:
+        raise ValueError("pinn_model is required to plot PINN vs NSGA-PINN comparison")
+
+    pinn_device = pinn_model.device
+    xt_data = torch.stack([input_data[:, 1], input_data[:, 0]], dim=1).to(pinn_device)
+    with torch.no_grad():
+        pinn_preds = pinn_model.forward(xt_data).detach().cpu()
+
+    data_u = target_data.detach().cpu()
+    nsga_u = nsga_preds.detach().cpu()
+
+    vmin = float(torch.min(torch.cat([data_u, pinn_preds, nsga_u])))
+    vmax = float(torch.max(torch.cat([data_u, pinn_preds, nsga_u])))
+
+    data_np = input_data.detach().cpu().numpy()
+    t_vals = data_np[:, 0]
+    x_vals = data_np[:, 1]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
+    titles = ["Training Data (Target)", "PINN Solution", "NSGA-PINN Solution"]
+    values = [data_u, pinn_preds, nsga_u]
+
+    for ax, title, vals in zip(axes, titles, values):
+        sc = ax.scatter(t_vals, x_vals, c=vals.squeeze().numpy(), s=12, cmap="viridis", vmin=vmin, vmax=vmax)
+        ax.set_title(title)
+        ax.set_xlabel("t")
+        ax.set_ylabel("x")
+
+    fig.colorbar(sc, ax=axes, shrink=0.9, pad=0.02, label="u")
+
+    if output_path:
+        fig.savefig(output_path, dpi=200)
+    return fig
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--adam_steps", type=int, default=10)
     parser.add_argument("--nsga_gens", type=int, default=50)
     parser.add_argument("--compare_third_party", action="store_true")
-    parser.add_argument("--third_party_epochs", type=int, default=None)
+    parser.add_argument("--plot_comparison", action="store_true")
+    parser.add_argument("--plot_path", type=str, default=join("examples", "pinn_comparison.png"))
+    parser.add_argument("--third_party_epochs", type=int, default=100)
     parser.add_argument("--third_party_f_mntr", type=int, default=None)
     args = parser.parse_args()
 
@@ -151,7 +199,8 @@ def main():
     )
 
     end_time = time.time()
-    print(f"Training complete in {end_time - start_time:.2f}s")
+    hybrid_time = end_time - start_time
+    print(f"Training complete in {hybrid_time:.2f}s")
 
     # Final eval
     final_loss = evaluator.evaluate_module(model)
@@ -159,7 +208,7 @@ def main():
 
     if args.compare_third_party:
         third_party_epochs = args.epochs if args.third_party_epochs is None else args.third_party_epochs
-        pinn_third_party = run_third_party_burgers(
+        pinn_third_party, pinn_time = run_third_party_burgers(
             input_data=input_data,
             target_data=target_data,
             input_phys=input_phys,
@@ -170,7 +219,24 @@ def main():
         tp_data_loss, tp_phys_loss = evaluate_third_party(
             pinn_third_party, input_data, target_data, input_phys
         )
-        print(f"Third-party Loss: Data={tp_data_loss.item():.6f}, Phys={tp_phys_loss.item():.6f}")
-
+        print(f"Third-party PINN Loss: Data={tp_data_loss.item():.6f}, Phys={tp_phys_loss.item():.6f}")
+        print(f"           Number of epochs: {third_party_epochs}")
+        print(f"           Training complete in {pinn_time:.2f}s")
+        print(f"NSGA-PINN  Final Loss: Data={final_loss[0].item():.6f}, Phys={final_loss[1].item():.6f}")
+        print(f"           Number of epochs: {args.epochs}")
+        print(f"           Number of ADAM steps: {args.adam_steps}")
+        print(f"           Number of NSGA gens: {args.nsga_gens}")
+        print(f"           Training complete in {hybrid_time:.2f}s")
+        if args.plot_comparison:
+            plot_comparison(
+                input_data=input_data,
+                target_data=target_data,
+                nsga_model=model,
+                pinn_model=pinn_third_party,
+                output_path=args.plot_path
+            )
+            print(f"Saved comparison plot to {args.plot_path}")
+    elif args.plot_comparison:
+        print("--plot_comparison requires --compare_third_party to provide a PINN baseline.")
 if __name__ == "__main__":
     main()

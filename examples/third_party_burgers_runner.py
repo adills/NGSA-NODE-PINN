@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 from typing import Optional, Tuple
-
+import time
 import torch
 
 
@@ -82,7 +82,7 @@ def run_third_party_burgers(
         lr, opt,
         f_scl, nu,
         w_ini, w_bnd, w_pde, bc,
-        f_mntr, r_seed, d_type, device_tp,
+        f_mntr0, r_seed, d_type, device_tp,
         n_epch, n_btch, c_tol
     ) = pb_params()
 
@@ -98,6 +98,8 @@ def run_third_party_burgers(
         f_mntr = int(f_mntr)
     elif n_epch < 20:
         f_mntr = 1
+    else:
+        f_mntr = f_mntr0
 
     data = input_data.detach().cpu()
     targets = target_data.detach().cpu()
@@ -149,8 +151,11 @@ def run_third_party_burgers(
         f_mntr, r_seed, d_type, device_tp
     )
     pinn.to(device_tp)
+    start_time = time.time()
     pinn.train(epoch=n_epch, batch=n_btch, tol=c_tol)
-    return pinn
+    end_time = time.time()
+    train_time = end_time - start_time
+    return pinn, train_time
 
 
 def evaluate_third_party(
