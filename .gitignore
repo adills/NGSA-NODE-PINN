@@ -1,3 +1,4 @@
+third_party/
 third_party/pinn_burgers/
 *.pyc
 *.DS_Store
