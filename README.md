@@ -87,6 +87,24 @@ Run the hybrid training verification script for the Neural ODE:
 uv run examples/verify_node_oscillator.py --device cpu
 ```
 
+## 🔌 Third-Party Baselines (Optional)
+
+This repo includes third-party apps under `third_party/` for validation-only comparisons. These are not required for core development.
+
+### Included app: `third_party/pinn_burgers`
+
+Purpose: provides a baseline PINN implementation for Burgers' Equation so you can compare Hybrid NSGA-PINN against a standard PINN.
+
+Install/use:
+1. Clone the baseline into the repo:
+   ```bash
+   git clone https://github.com/okada39/pinn_burgers third_party/pinn_burgers
+   ```
+2. Run the comparison:
+   ```bash
+   uv run examples/verify_hybrid_pinn.py --compare_third_party
+   ```
+
 ## 📂 Project Structure
 
 ```text
