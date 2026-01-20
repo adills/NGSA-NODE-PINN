@@ -13,6 +13,9 @@ from src.nsga_pinn.selector import ParetoSelector
 from src.nsga_pinn.orchestrator import HybridPinnOrchestrator
 from .third_party_burgers_runner import run_third_party_burgers, evaluate_third_party
 
+# This test compares NSGA-PINN with PINN for the Burgers PDE.
+# The third party code comes from https://github.com/ShotaDeguchi/PINN_Torch
+
 # --- Burgers' Equation Setup ---
 NU = 0.01 / np.pi
 
