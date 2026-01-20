@@ -1,5 +1,5 @@
+third_party/pinn_burgers/
 *.pyc
 *.DS_Store
 .DS_Store
 *.egg-info/
-.DS_Store

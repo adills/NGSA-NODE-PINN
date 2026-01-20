@@ -5,15 +5,14 @@ description = "Hybrid NSGA-PINN and NSGA-NODE experiments."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "numpy",
-    "pymoo",
-    "torch",
-    "torchode",
+    "numpy>=2.4.1",
+    "pymoo>=0.6.1.6",
+    "torch>=2.9.1",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "pytest",
+    "pytest>=9.0.2",
 ]
 viz = [
     "matplotlib",

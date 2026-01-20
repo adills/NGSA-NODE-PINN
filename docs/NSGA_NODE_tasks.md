@@ -91,6 +91,15 @@ This document outlines the detailed requirements and tasks for implementing the 
             2.  **Convert:** Use `interface.genome_to_state_dict(best_individual)` (Single genome helper).
             3.  **Load:** `dynamics.load_state_dict(converted_weights)`.
             4.  **Reset Optimizer:** Clear ADAM state buffers (momentum/variance) to prevent stale state issues.
+
+#### 2.5.2 Adaptive ADAM/NSGA Schedule (Optional)
+**Goal:** Mirror the PINN schedule logic to balance NODE refinement vs exploration.
+
+*   **Condition A (NSGA strong, ADAM weak):**
+    *   If NSGA consistently improves the best Pareto score while ADAM improvement is near zero, **reduce** `adam_steps_per_epoch`.
+*   **Condition B (NSGA stagnates or noisy):**
+    *   If NSGA improvement is below a threshold for multiple epochs **or** the Pareto front becomes noisy, **increase** `adam_steps_per_epoch`.
+    *   Optionally run **ADAM-only warm-up** for a few epochs (skip NSGA) before re-enabling NSGA.
 *   **Unit Tests:**
     *   **Test:** `test_hybrid_loop_handoff`: Verify weights change after NSGA phase and optimizer state is reset.
 
