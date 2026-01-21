@@ -48,6 +48,60 @@ class OscillatorModel(nn.Module):
 
         return torch.stack([dxdt, dvdt], dim=-1)
 
+class ClassicalBaselineNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.Tanh(),
+            nn.Linear(32, 32),
+            nn.Tanh(),
+            nn.Linear(32, 1)
+        )
+
+    def forward(self, t):
+        return self.net(t)
+
+def train_classical_baseline(t_train, x0, v0, w0, xi, steps=1000, lr=1e-3, verbose=True):
+    device = t_train.device
+    model = ClassicalBaselineNet().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    if verbose:
+        step_iter = range(steps)
+        pbar = None
+    else:
+        from tqdm import tqdm
+        pbar = tqdm(range(steps), desc="Classical", unit="Step")
+        step_iter = pbar
+
+    for _ in step_iter:
+        t = t_train.clone().detach().requires_grad_(True)
+        x = model(t)
+        x_t = torch.autograd.grad(x, t, torch.ones_like(x), create_graph=True)[0]
+        x_tt = torch.autograd.grad(x_t, t, torch.ones_like(x_t), create_graph=True)[0]
+        residual = x_tt + xi * x_t + (w0 ** 2) * x
+
+        t0 = torch.zeros((1, 1), device=device, requires_grad=True)
+        x0_pred = model(t0)
+        x_t0 = torch.autograd.grad(x0_pred, t0, torch.ones_like(x0_pred), create_graph=True)[0]
+
+        loss_res = torch.mean(residual ** 2)
+        loss_ic = torch.mean((x0_pred - x0) ** 2) + torch.mean((x_t0 - v0) ** 2)
+        loss = loss_res + loss_ic
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if pbar is not None:
+            pbar.set_postfix({"loss": f"{loss.item():.3f}"})
+
+    if pbar is not None:
+        pbar.close()
+
+    return model
+
 def get_correction_term(model, params, t, y):
     # Helper to extract ONLY the NN output magnitude for loss
     # functional_call used by Evaluator passes 'params'
@@ -117,6 +171,7 @@ def main():
     parser.add_argument("--nsga_gens", type=int, default=20)
     parser.add_argument("--pop_size", type=int, default=50)
     parser.add_argument("--output_plot", type=str, default="examples/node_oscillator_comparison.png")
+    parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -169,7 +224,8 @@ def main():
         epochs=args.epochs,
         adam_steps_per_epoch=args.adam_steps,
         nsga_gens_per_epoch=args.nsga_gens,
-        pop_size=args.pop_size
+        pop_size=args.pop_size,
+        verbose=args.verbose
     )
     print(f"Hybrid Time: {time.time() - start_time:.2f}s")
 
@@ -203,11 +259,40 @@ def main():
         adam_steps_per_epoch=args.adam_steps,
         nsga_gens_per_epoch=0, # Disable NSGA
         pop_size=args.pop_size,
-        adapt_adam_steps=False
+        adapt_adam_steps=False,
+        verbose=args.verbose
     )
     print(f"Baseline Time: {time.time() - start_time:.2f}s")
 
-    # 6. Evaluation & Statistics
+    # 6. Train Classical Baseline (NN + Residual)
+    print("\n--- Training Classical Baseline (NN Residual) ---")
+    w0 = np.sqrt(2.0)
+    xi = 0.5
+    x0 = 1.0
+    v0 = 0.0
+    classical_steps = args.epochs * args.adam_steps
+    start_time = time.time()
+    classical_model = train_classical_baseline(
+        t_train.view(-1, 1),
+        x0=x0,
+        v0=v0,
+        w0=w0,
+        xi=xi,
+        steps=classical_steps,
+        lr=0.01
+    )
+    print(f"Classical Time: {time.time() - start_time:.2f}s")
+    t_eval = t_train.view(-1, 1).clone().detach().requires_grad_(True)
+    x_pred = classical_model(t_eval)
+    v_pred = torch.autograd.grad(x_pred, t_eval, torch.ones_like(x_pred), create_graph=False)[0]
+    y_classical_t = torch.cat([x_pred, v_pred], dim=1).detach()
+    y_classical = y_classical_t.cpu().numpy()
+    tail_idx = int(0.8 * len(y_classical_t))
+    tail_classical = y_classical_t[tail_idx:]
+    tm_classical = torch.mean(tail_classical, dim=0).cpu().numpy()
+    ts_classical = torch.std(tail_classical, dim=0).cpu().numpy()
+
+    # 7. Evaluation & Statistics
     print("\n--- Evaluation ---")
 
     def evaluate_model(mod, name):
@@ -271,11 +356,14 @@ def main():
 
     y_hybrid, mse_hybrid, tm_hybrid, ts_hybrid = evaluate_model(hybrid_model, "Hybrid")
     y_base, mse_base, tm_base, ts_base = evaluate_model(baseline_model, "Baseline")
+    mse_classical = torch.mean((y_classical_t - y_true) ** 2).item()
 
     print(f"Hybrid MSE: {mse_hybrid:.6f}")
     print(f"Baseline MSE: {mse_base:.6f}")
+    print(f"Classical Baseline MSE: {mse_classical:.6f}")
     print(f"Hybrid Tail Mean: {tm_hybrid}, Std: {ts_hybrid}")
     print(f"Baseline Tail Mean: {tm_base}, Std: {ts_base}")
+    print(f"Classical Tail Mean: {tm_classical}, Std: {ts_classical}")
     print(f"Exact Tail Mean: {y_true[int(0.8*len(y_true)):].mean(dim=0).cpu().numpy()}")
 
     # 7. Plotting
@@ -284,6 +372,7 @@ def main():
         ax.plot(t_np, x_true_np, 'k-', label='Exact', linewidth=2)
         ax.plot(t_np, y_hybrid[:, 0], 'r--', label='NSGA-NODE', linewidth=2)
         ax.plot(t_np, y_base[:, 0], 'b:', label='Baseline (ADAM)', linewidth=2)
+        ax.plot(t_np, y_classical[:, 0], 'g-.', label='Classical NN Baseline', linewidth=2)
 
         ax.set_title("Damped Oscillator Trajectory Comparison")
         ax.set_xlabel("Time")
