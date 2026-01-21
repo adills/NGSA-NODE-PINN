@@ -108,46 +108,67 @@ def generate_data(n_data, n_phys):
         torch.tensor(inputs_phys, dtype=torch.float32)
     )
 
-def plot_comparison(input_data, target_data, nsga_model, pinn_model=None, 
-                    output_path=join("examples", "pinn_comparison.png")):
+def plot_comparison(
+    input_data,
+    target_data,
+    nsga_model,
+    pinn_model=None,
+    output_path=join("examples", "pinn_comparison.png"),
+    n_times=4,
+    x_points=200,
+):
     try:
         import matplotlib.pyplot as plt
     except ImportError as exc:
         raise RuntimeError("matplotlib is required for plot_comparison") from exc
 
     nsga_model.eval()
-    with torch.no_grad():
-        nsga_preds = nsga_model(input_data).detach()
-
     if pinn_model is None:
         raise ValueError("pinn_model is required to plot PINN vs NSGA-PINN comparison")
 
-    pinn_device = pinn_model.device
-    xt_data = torch.stack([input_data[:, 1], input_data[:, 0]], dim=1).to(pinn_device)
-    with torch.no_grad():
-        pinn_preds = pinn_model.forward(xt_data).detach().cpu()
-
-    data_u = target_data.detach().cpu()
-    nsga_u = nsga_preds.detach().cpu()
-
-    vmin = float(torch.min(torch.cat([data_u, pinn_preds, nsga_u])))
-    vmax = float(torch.max(torch.cat([data_u, pinn_preds, nsga_u])))
-
     data_np = input_data.detach().cpu().numpy()
-    t_vals = data_np[:, 0]
-    x_vals = data_np[:, 1]
+    t_min = float(data_np[:, 0].min())
+    t_max = float(data_np[:, 0].max())
+    x_min = float(data_np[:, 1].min())
+    x_max = float(data_np[:, 1].max())
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
-    titles = ["Training Data (Target)", "PINN Solution", "NSGA-PINN Solution"]
-    values = [data_u, pinn_preds, nsga_u]
+    if n_times < 1:
+        raise ValueError("n_times must be >= 1")
+    times = np.linspace(t_min, t_max, num=n_times)
+    x_grid = np.linspace(x_min, x_max, num=x_points, dtype=np.float32)
 
-    for ax, title, vals in zip(axes, titles, values):
-        sc = ax.scatter(t_vals, x_vals, c=vals.squeeze().numpy(), s=12, cmap="viridis", vmin=vmin, vmax=vmax)
-        ax.set_title(title)
-        ax.set_xlabel("t")
-        ax.set_ylabel("x")
+    ncols = 2 if n_times > 1 else 1
+    nrows = int(np.ceil(n_times / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 3.5 * nrows), constrained_layout=True)
+    axes = np.atleast_1d(axes).ravel()
 
-    fig.colorbar(sc, ax=axes, shrink=0.9, pad=0.02, label="u")
+    nsga_device = next(nsga_model.parameters()).device
+    pinn_device = pinn_model.device
+
+    with torch.no_grad():
+        for i, t_val in enumerate(times):
+            ax = axes[i]
+            x_nsga = torch.from_numpy(x_grid).to(nsga_device)
+            t_nsga = torch.full_like(x_nsga, float(t_val))
+            tx_nsga = torch.stack([t_nsga, x_nsga], dim=1)
+            nsga_pred = nsga_model(tx_nsga).detach().cpu().numpy().squeeze()
+
+            x_pinn = torch.from_numpy(x_grid).to(pinn_device)
+            t_pinn = torch.full_like(x_pinn, float(t_val))
+            xt_pinn = torch.stack([x_pinn, t_pinn], dim=1)
+            pinn_pred = pinn_model.forward(xt_pinn).detach().cpu().numpy().squeeze()
+
+            ax.plot(x_grid, pinn_pred, label="PINN")
+            ax.plot(x_grid, nsga_pred, label="NSGA-PINN")
+            ax.set_title(f"t = {t_val:.2f}")
+            ax.set_xlabel("x")
+            ax.set_ylabel("u")
+            ax.grid(alpha=0.3)
+
+    for j in range(n_times, len(axes)):
+        axes[j].axis("off")
+
+    axes[0].legend(loc="best")
 
     if output_path:
         fig.savefig(output_path, dpi=200)
@@ -156,15 +177,24 @@ def plot_comparison(input_data, target_data, nsga_model, pinn_model=None,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--adam_steps", type=int, default=10)
-    parser.add_argument("--nsga_gens", type=int, default=50)
-    parser.add_argument("--compare_third_party", action="store_true")
-    parser.add_argument("--plot_comparison", action="store_true")
+    parser.add_argument("--nsga_gens", type=int, default=100)
+    parser.add_argument("--no_compare_third_party", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--no_plot_comparison", action="store_true")
     parser.add_argument("--plot_path", type=str, default=join("examples", "pinn_comparison.png"))
-    parser.add_argument("--third_party_epochs", type=int, default=100)
-    parser.add_argument("--third_party_f_mntr", type=int, default=None)
+    parser.add_argument("--third_party_epochs", type=int, default=2000)
+    parser.add_argument("--third_party_f_mntr", type=int, default=10)
     args = parser.parse_args()
+    if args.no_compare_third_party:
+        args.compare_third_party = False
+    else:
+        args.compare_third_party = True
+    if args.no_plot_comparison:
+        args.plot_comparison = False    # noqa: E701
+    else:
+        args.plot_comparison = True    # noqa: E701
 
     device = torch.device(args.device)
     print(f"Running on {device}")
@@ -198,7 +228,8 @@ def main():
         epochs=args.epochs,
         adam_steps_per_epoch=args.adam_steps,
         nsga_gens_per_epoch=args.nsga_gens,
-        pop_size=20 # Small pop for speed in verification
+        pop_size=20, # Small pop for speed in verification
+        verbose=args.verbose
     )
 
     end_time = time.time()
@@ -217,7 +248,8 @@ def main():
             input_phys=input_phys,
             device=device,
             epochs=third_party_epochs,
-            f_mntr=args.third_party_f_mntr
+            f_mntr=args.third_party_f_mntr,
+            verbose=args.verbose
         )
         tp_data_loss, tp_phys_loss = evaluate_third_party(
             pinn_third_party, input_data, target_data, input_phys
