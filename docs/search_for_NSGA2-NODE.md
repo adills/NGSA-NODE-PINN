@@ -127,15 +127,15 @@ $$\frac{dh(t)}{dt} = f_{\theta}(h(t), t)$$
 
 where the network could be one of these options:
 
-$$f_{\UDE}(h(t), t) = f_{physics}(h(t), t, p) + \lambda f_{\theta}(h(t), t)$$
+$$f_{UDE}(h(t), t) = f_{physics}(h(t), t, p) + \lambda f_{\theta}(h(t), t)$$
 
 or
 
-$$f_{\UDE}(h(t), t) = f_{physics}(h(t), t, p +  \lambda f_{\theta}(h(t), t))$$
+$$f_{UDE}(h(t), t) = f_{physics}(h(t), t, p +  \lambda f_{\theta}(h(t), t))$$
 
 or
 
-$$f_{\UDE}(h(t), t) = f_{physics}(h(t), t, p +  \lambda f_{\theta}(h(t), t)) + \lambda f_{\theta}(h(t), t)$$
+$$f_{UDE}(h(t), t) = f_{physics}(h(t), t, p +  \lambda f_{\theta}(h(t), t)) + \lambda f_{\theta}(h(t), t)$$
 
 The output at time *T* is computed by an ODE solver:
 
