@@ -5,7 +5,7 @@ from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize
 from src.nsga_neuro_evolution_core.utils import adam_update_context
 
-class HybridPinnOrchestrator:
+class HybridNodeOrchestrator:
     def __init__(self, model, interface, evaluator, problem_cls, selector,
                  optimizer_cls=torch.optim.Adam, optimizer_kwargs=None):
         self.model = model
@@ -41,7 +41,7 @@ class HybridPinnOrchestrator:
         adam_step_adjust=1,
     ):
         """
-        Run the hybrid training loop.
+        Run the hybrid training loop for NODE.
         """
         history = []
         adam_loss_history = []
@@ -69,10 +69,10 @@ class HybridPinnOrchestrator:
                 for i in range(adam_steps_per_epoch):
                     self.optimizer.zero_grad()
 
-                    # Evaluate module directly
+                    # Evaluate module directly (Graph attached)
                     loss_tuple = self.evaluator.evaluate_module(self.model)
 
-                    # Scalarize: Simple Sum (Data + Physics)
+                    # Scalarize: Simple Sum (Data + Correction)
                     total_loss = loss_tuple[0] + loss_tuple[1]
 
                     total_loss.backward()
@@ -87,8 +87,9 @@ class HybridPinnOrchestrator:
             adam_loss_history.append(avg_adam_loss)
 
             # --- NSGA Phase ---
-            if skip_nsga_epochs_remaining > 0:
-                skip_nsga_epochs_remaining -= 1
+            if skip_nsga_epochs_remaining > 0 or nsga_gens_per_epoch <= 0:
+                if skip_nsga_epochs_remaining > 0:
+                    skip_nsga_epochs_remaining -= 1
                 res = None
                 nsga_best_f = [np.nan, np.nan]
                 nsga_best_sum = np.nan
@@ -97,16 +98,9 @@ class HybridPinnOrchestrator:
                 current_genome = self.interface.to_genome(self.model)
 
                 # 2. Setup Problem
-                # Center bounds around current weights
                 problem = self.problem_cls(self.evaluator, current_genome, bounds_radius=0.1)
 
                 # 3. Run NSGA-II
-                # Initialize population?
-                # Pymoo initializes randomly within bounds.
-                # Since bounds are centered on current genome, it explores the neighborhood.
-                # We can also seed the population with the current genome if we want.
-                # But Random around neighborhood is standard "Jump" strategy.
-
                 algorithm = NSGA2(pop_size=pop_size)
 
                 res = minimize(
@@ -117,7 +111,6 @@ class HybridPinnOrchestrator:
                 )
 
                 # --- Handoff ---
-                # Select best from Pareto Front
                 if res.F is not None and len(res.F) > 0:
                     best_genome = self.selector.select_knee_point(res.X, res.F)
 
@@ -125,7 +118,7 @@ class HybridPinnOrchestrator:
                     state_dict = self.interface.genome_to_state_dict(best_genome)
                     self.model.load_state_dict(state_dict)
 
-                    # Reset Optimizer to clear momentum
+                    # Reset Optimizer
                     self.optimizer = self._create_optimizer()
 
                     nsga_best_f = res.F.min(axis=0)
@@ -143,6 +136,7 @@ class HybridPinnOrchestrator:
                     nsga_improve_history.append(nsga_improve)
                 nsga_best_sum_history.append(nsga_best_sum)
 
+            # Schedule Adaptation
             if adapt_adam_steps:
                 if (
                     len(nsga_improve_history) >= improvement_window

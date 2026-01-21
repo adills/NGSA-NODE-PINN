@@ -64,6 +64,7 @@ def run_third_party_burgers(
     third_party_dir: Optional[Path] = None,
     val_frac: float = 0.2,
     seed: int = 0,
+    verbose: bool = True,
 ):
     third_party_dir = _default_third_party_dir() if third_party_dir is None else Path(third_party_dir)
     if not third_party_dir.exists():
@@ -152,10 +153,49 @@ def run_third_party_burgers(
     )
     pinn.to(device_tp)
     start_time = time.time()
-    pinn.train(epoch=n_epch, batch=n_btch, tol=c_tol)
+    if verbose:
+        pinn.train(epoch=n_epch, batch=n_btch, tol=c_tol)
+    else:
+        _train_with_pbar(pinn, epoch=n_epch, tol=c_tol)
     end_time = time.time()
     train_time = end_time - start_time
     return pinn, train_time
+
+
+def _train_with_pbar(pinn, epoch, tol):
+    from tqdm import tqdm
+
+    pbar = tqdm(range(epoch), desc="Baseline PINN", unit="Epoch")
+    t0 = time.time()
+    for ep in pbar:
+        loss_trn = pinn.loss_glb(
+            pinn.x_ini_trn, pinn.t_ini_trn, pinn.u_ini_trn,
+            pinn.x_bnd_trn, pinn.t_bnd_trn, pinn.u_bnd_trn,
+            pinn.x_pde_trn, pinn.t_pde_trn
+        )
+        loss_val = pinn.loss_glb(
+            pinn.x_ini_val, pinn.t_ini_val, pinn.u_ini_val,
+            pinn.x_bnd_val, pinn.t_bnd_val, pinn.u_bnd_val,
+            pinn.x_pde_val, pinn.t_pde_val
+        )
+        pinn.optimzer.zero_grad()
+        loss_trn.backward()
+        pinn.optimzer.step()
+        ep_loss_trn = loss_trn.item()
+        ep_loss_val = loss_val.item()
+        pinn.loss_trn_log.append(ep_loss_trn)
+        pinn.loss_val_log.append(ep_loss_val)
+
+        elps = time.time() - t0
+        pbar.set_postfix({
+            "loss_trn": f"{ep_loss_trn:.3f}",
+            "loss_val": f"{ep_loss_val:.3f}",
+            "elps": f"{elps:.3f}",
+        })
+        t0 = time.time()
+        if ep_loss_val < tol:
+            break
+    pbar.close()
 
 
 def evaluate_third_party(

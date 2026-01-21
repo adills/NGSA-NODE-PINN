@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from src.nsga_pinn.selector import ParetoSelector
+from src.nsga_neuro_evolution_core.selector import ParetoSelector
 
 def test_best_data_and_physics():
     selector = ParetoSelector()
