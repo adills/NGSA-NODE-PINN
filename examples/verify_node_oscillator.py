@@ -210,7 +210,7 @@ def main():
     )
 
     # 4. Train Hybrid
-    print("\n--- Training Hybrid NSGA-NODE ---")
+    print(f"\n--- Training Hybrid NSGA-NODE, GA generations: {args.nsga_gens} ---")
     problem_cls = NsgaNodeProblem
     selector = ParetoSelector()
 
@@ -227,7 +227,8 @@ def main():
         pop_size=args.pop_size,
         verbose=args.verbose
     )
-    print(f"Hybrid Time: {time.time() - start_time:.2f}s")
+    hybrid_time = time.time() - start_time
+    print(f"Hybrid Time: {hybrid_time:.2f}s")
 
     # 5. Train Baseline (Pure ADAM)
     print("\n--- Training Baseline (Pure ADAM) ---")
@@ -262,7 +263,8 @@ def main():
         adapt_adam_steps=False,
         verbose=args.verbose
     )
-    print(f"Baseline Time: {time.time() - start_time:.2f}s")
+    baseline_time = time.time() - start_time
+    print(f"Baseline Time: {baseline_time:.2f}s")
 
     # 6. Train Classical Baseline (NN + Residual)
     print("\n--- Training Classical Baseline (NN Residual) ---")
@@ -279,9 +281,11 @@ def main():
         w0=w0,
         xi=xi,
         steps=classical_steps,
-        lr=0.01
+        lr=0.01,
+        verbose=args.verbose
     )
-    print(f"Classical Time: {time.time() - start_time:.2f}s")
+    classical_time = time.time() - start_time
+    print(f"Classical Time: {classical_time:.2f}s")
     t_eval = t_train.view(-1, 1).clone().detach().requires_grad_(True)
     x_pred = classical_model(t_eval)
     v_pred = torch.autograd.grad(x_pred, t_eval, torch.ones_like(x_pred), create_graph=False)[0]
@@ -357,14 +361,24 @@ def main():
     y_hybrid, mse_hybrid, tm_hybrid, ts_hybrid = evaluate_model(hybrid_model, "Hybrid")
     y_base, mse_base, tm_base, ts_base = evaluate_model(baseline_model, "Baseline")
     mse_classical = torch.mean((y_classical_t - y_true) ** 2).item()
+    hybrid_steps = sum(item["adam_steps_per_epoch"] for item in hist_hybrid)
+    baseline_steps = sum(item["adam_steps_per_epoch"] for item in hist_baseline)
 
-    print(f"Hybrid MSE: {mse_hybrid:.6f}")
-    print(f"Baseline MSE: {mse_base:.6f}")
-    print(f"Classical Baseline MSE: {mse_classical:.6f}")
-    print(f"Hybrid Tail Mean: {tm_hybrid}, Std: {ts_hybrid}")
-    print(f"Baseline Tail Mean: {tm_base}, Std: {ts_base}")
-    print(f"Classical Tail Mean: {tm_classical}, Std: {ts_classical}")
-    print(f"Exact Tail Mean: {y_true[int(0.8*len(y_true)):].mean(dim=0).cpu().numpy()}")
+    print(f"Hybrid NODE MSE   ({hybrid_steps:04d} ADAM Steps, {hybrid_time:6.2f}s): {mse_hybrid:.4f}")
+    print(f"Baseline NODE MSE ({baseline_steps:04d} ADAM Steps, {baseline_time:6.2f}s): {mse_base:.4f}")
+    print(f"Classical NN MSE  ({classical_steps:04d} ADAM Steps, {classical_time:6.2f}s): {mse_classical:.4f}")
+    formatted_list_m = ' '.join(f"{num:7.4f}" for num in tm_hybrid)
+    formatted_list_s = ' '.join(f"{num:7.4f}" for num in ts_hybrid)
+    print(f"Hybrid NODE Tail Mean: {formatted_list_m}, Std: {formatted_list_s}")
+    formatted_list_m = ' '.join(f"{num:7.4f}" for num in tm_base)
+    formatted_list_s = ' '.join(f"{num:7.4f}" for num in ts_base)
+    print(f"Baseline NODE Tail Mean: {formatted_list_m}, Std: {formatted_list_s}")
+    formatted_list_m = ' '.join(f"{num:7.4f}" for num in tm_classical)
+    formatted_list_s = ' '.join(f"{num:7.4f}" for num in ts_classical)
+    print(f"Classical NN Tail Mean: {formatted_list_m}, Std: {formatted_list_s}")
+    exact_tail = y_true[int(0.8*len(y_true)):].mean(dim=0).cpu().numpy()
+    formatted_list = ' '.join(f"{num:7.4f}" for num in exact_tail)
+    print(f"Exact Tail Mean: {formatted_list}")
 
     # 7. Plotting
     try:

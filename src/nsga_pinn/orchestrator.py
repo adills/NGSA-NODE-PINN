@@ -50,7 +50,16 @@ class HybridPinnOrchestrator:
         nsga_improve_history = []
         skip_nsga_epochs_remaining = 0
 
-        for epoch in range(epochs):
+        if verbose:
+            epoch_iter = range(epochs)
+            pbar = None
+        else:
+            from tqdm import tqdm
+            desc = "Baseline" if nsga_gens_per_epoch <= 0 else "Hybrid"
+            pbar = tqdm(range(epochs), desc=desc, unit="Epoch")
+            epoch_iter = pbar
+
+        for epoch in epoch_iter:
             # --- ADAM Phase ---
             self.model.train()
             adam_loss_accum = 0.0
@@ -178,6 +187,16 @@ class HybridPinnOrchestrator:
                     f"Epoch {epoch}: ADAM Loss={avg_adam_loss:.6f}, "
                     f"NSGA Best F={nsga_best_f}, {step_info}{action_info}"
                 )
+            elif pbar is not None:
+                stats = {
+                    "adam": f"{avg_adam_loss:.3f}",
+                    "steps": adam_steps_per_epoch,
+                }
+                if nsga_gens_per_epoch > 0 and res is not None:
+                    stats["F"] = f"[{nsga_best_f[0]:.3f},{nsga_best_f[1]:.3f}]"
+                if schedule_action:
+                    stats["schedule"] = schedule_action
+                pbar.set_postfix(stats)
 
             history.append({
                 'epoch': epoch,
@@ -188,5 +207,8 @@ class HybridPinnOrchestrator:
                 'nsga_ran': res is not None,
                 'schedule_action': schedule_action
             })
+
+        if pbar is not None:
+            pbar.close()
 
         return history
