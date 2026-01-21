@@ -113,7 +113,55 @@ This document outlines the detailed requirements and tasks for implementing the 
         *   Physics Model (Incomplete): $\ddot{x} + 2.0 x = u_{NN}(\dot{x})$.
         *   *Constraint:* We assume Mass (1.0) and Stiffness (2.0) are known, Damping is unknown.
     2.  **Identifiability:** This setup ensures the NN *must* learn the damping term $-0.5\dot{x}$ to minimize Data Loss, while the "Correction Magnitude" objective encourages it to be as small as possible.
-    3.  **Run Hybrid Training:**
+    3.  **Compare NSGA-NODE with traditional methods:**
+        *   **Exact solution (underdamped, reference):**
+            ```python
+            w0 = 2.0
+            xi = 0.5
+            x0 = 1.0
+            w = torch.sqrt(torch.tensor(w0**2 - xi**2 / 4))
+            x_sol_under = lambda t: x0 * torch.exp(-0.5 * xi * t) * torch.cos(w * t)
+            ```
+        *   Use the closed-form solution as a reference curve against the NSGA-NODE trajectory.
+        *   **Baseline NN solver (autograd, single-objective):**
+            ```python
+            import torch
+            import torch.nn as nn
+
+            w0 = 2.0
+            xi = 0.5
+            x0 = 1.0
+            v0 = 0.0
+
+            class Net(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.net = nn.Sequential(
+                        nn.Linear(1, 32),
+                        nn.Tanh(),
+                        nn.Linear(32, 32),
+                        nn.Tanh(),
+                        nn.Linear(32, 1),
+                    )
+                def forward(self, t):
+                    return self.net(t)
+
+            def ode_residual(model, t):
+                t = t.clone().detach().requires_grad_(True)
+                x = model(t)
+                x_t = torch.autograd.grad(x, t, torch.ones_like(x), create_graph=True)[0]
+                x_tt = torch.autograd.grad(x_t, t, torch.ones_like(x_t), create_graph=True)[0]
+                return x_tt + xi * x_t + (w0 ** 2) * x
+
+            # Loss = residual + IC/BC
+            model = Net()
+            t_grid = torch.linspace(0.0, 1.0, 200).view(-1, 1)
+            res = ode_residual(model, t_grid)
+            x_t0 = torch.autograd.grad(model(t_grid[:1]), t_grid[:1], torch.ones(1, 1), create_graph=True)[0]
+            loss = (res ** 2).mean() + (model(t_grid[:1]) - x0) ** 2 + (x_t0 - v0) ** 2
+            ```
+        *   Train this baseline with ADAM and compare its trajectory to the NSGA-NODE result.
+    4.  **Run Hybrid Training:**
         *   Check if the NN converges to $-0.5\dot{x}$ (linear relationship).
         *   Verify "Correction Loss" prevents the NN from learning high-frequency noise.
 
