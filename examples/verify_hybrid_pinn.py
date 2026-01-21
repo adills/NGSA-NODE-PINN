@@ -7,9 +7,9 @@ from os.path import join
 from torch.func import vmap, functional_call, jacrev, jacfwd
 
 from src.nsga_neuro_evolution_core.interface import PytorchGenomeInterface
+from src.nsga_neuro_evolution_core.selector import ParetoSelector
 from src.nsga_pinn.evaluator import VectorizedPinnEvaluator
 from src.nsga_pinn.problem import NsgaPinnProblem
-from src.nsga_pinn.selector import ParetoSelector
 from src.nsga_pinn.orchestrator import HybridPinnOrchestrator
 from .third_party_burgers_runner import run_third_party_burgers, evaluate_third_party
 
