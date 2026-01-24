@@ -4,6 +4,7 @@ import numpy as np
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize
 from src.nsga_neuro_evolution_core.utils import adam_update_context
+from src.nsga_neuro_evolution_core.pareto_gif import ParetoGifRecorder
 
 class HybridNodeOrchestrator:
     def __init__(self, model, interface, evaluator, problem_cls, selector,
@@ -39,6 +40,10 @@ class HybridNodeOrchestrator:
         nsga_noise_threshold=0.1,
         warmup_epochs_on_stagnation=0,
         adam_step_adjust=1,
+        pareto_gif_path=None,
+        pareto_gif_fps=1,
+        pareto_gif_repeat_last=True,
+        pareto_axis_labels=None,
     ):
         """
         Run the hybrid training loop for NODE.
@@ -49,6 +54,18 @@ class HybridNodeOrchestrator:
         nsga_best_sum_history = []
         nsga_improve_history = []
         skip_nsga_epochs_remaining = 0
+        pareto_recorder = None
+
+        if pareto_gif_path:
+            if pareto_axis_labels is None:
+                pareto_axis_labels = ("Correction Loss", "Data Loss")
+            pareto_recorder = ParetoGifRecorder(
+                output_path=pareto_gif_path,
+                fps=pareto_gif_fps,
+                repeat_last=pareto_gif_repeat_last,
+                xlabel=pareto_axis_labels[0],
+                ylabel=pareto_axis_labels[1],
+            )
 
         if verbose:
             epoch_iter = range(epochs)
@@ -173,6 +190,18 @@ class HybridNodeOrchestrator:
                                 schedule_action = "adam_warmup"
 
             nsga_front = res.F if res is not None else None
+            if pareto_recorder is not None:
+                if res is not None:
+                    pop_f = None
+                    try:
+                        pop = getattr(res, "pop", None)
+                        if pop is not None:
+                            pop_f = pop.get("F")
+                    except Exception:
+                        pop_f = None
+                    pareto_recorder.record(pop_f=pop_f, front_f=nsga_front, epoch=epoch)
+                else:
+                    pareto_recorder.record(pop_f=None, front_f=None, epoch=epoch)
 
             if verbose:
                 step_info = f"steps={adam_steps_per_epoch}"
@@ -204,5 +233,8 @@ class HybridNodeOrchestrator:
 
         if pbar is not None:
             pbar.close()
+
+        if pareto_recorder is not None:
+            pareto_recorder.save_gif()
 
         return history

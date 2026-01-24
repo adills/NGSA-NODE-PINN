@@ -225,7 +225,10 @@ def main():
         adam_steps_per_epoch=args.adam_steps,
         nsga_gens_per_epoch=args.nsga_gens,
         pop_size=args.pop_size,
-        verbose=args.verbose
+        verbose=args.verbose,
+        pareto_gif_path=join("tests", "pareto_front_node.gif"),
+        pareto_gif_fps=1,
+        pareto_gif_repeat_last=True,
     )
     hybrid_time = time.time() - start_time
     print(f"Hybrid Time: {hybrid_time:.2f}s")

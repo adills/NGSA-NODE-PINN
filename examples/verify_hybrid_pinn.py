@@ -229,7 +229,10 @@ def main():
         adam_steps_per_epoch=args.adam_steps,
         nsga_gens_per_epoch=args.nsga_gens,
         pop_size=20, # Small pop for speed in verification
-        verbose=args.verbose
+        verbose=args.verbose,
+        pareto_gif_path=join("tests", "pareto_front_pinn.gif"),
+        pareto_gif_fps=1,
+        pareto_gif_repeat_last=True,
     )
 
     end_time = time.time()
