@@ -37,6 +37,7 @@ class ParetoGifRecorder:
         front_size: int = 32,
         figsize: Tuple[float, float] = (6.0, 4.0),
         dpi: int = 120,
+        axes_limits: Optional[List[float]] = None,
     ):
         self.output_path = output_path
         self.fps = fps
@@ -50,6 +51,7 @@ class ParetoGifRecorder:
         self.front_size = front_size
         self.figsize = figsize
         self.dpi = dpi
+        self.axes_limits = axes_limits
 
         self._frames: List[ParetoFrame] = []
         self._last_pop: Optional[np.ndarray] = None
@@ -145,7 +147,12 @@ class ParetoGifRecorder:
         ax.set_ylabel(self.ylabel)
         ax.grid(alpha=0.25)
 
-        if bounds is not None:
+        if self.axes_limits is not None:
+            if len(self.axes_limits) != 2:
+                raise ValueError("axes_limits must be a list like [x_max, y_max]")
+            ax.set_xlim(0.0, float(self.axes_limits[0]))
+            ax.set_ylim(0.0, float(self.axes_limits[1]))
+        elif bounds is not None:
             (xmin, xmax), (ymin, ymax) = bounds
             ax.set_xlim(xmin, xmax)
             ax.set_ylim(ymin, ymax)

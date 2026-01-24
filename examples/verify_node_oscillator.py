@@ -172,6 +172,8 @@ def main():
     parser.add_argument("--pop_size", type=int, default=50)
     parser.add_argument("--output_plot", type=str, default="examples/node_oscillator_comparison.png")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--pareto_limits", nargs=2, type=float, default=None)
+
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -229,6 +231,7 @@ def main():
         pareto_gif_path=join("tests", "pareto_front_node.gif"),
         pareto_gif_fps=1,
         pareto_gif_repeat_last=True,
+        pareto_limits=args.pareto_limits,
     )
     hybrid_time = time.time() - start_time
     print(f"Hybrid Time: {hybrid_time:.2f}s")

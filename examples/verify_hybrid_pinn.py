@@ -186,6 +186,8 @@ def main():
     parser.add_argument("--plot_path", type=str, default=join("examples", "pinn_comparison.png"))
     parser.add_argument("--third_party_epochs", type=int, default=2000)
     parser.add_argument("--third_party_f_mntr", type=int, default=10)
+    parser.add_argument("--pareto_limits", nargs=2, type=float, default=None)
+
     args = parser.parse_args()
     if args.no_compare_third_party:
         args.compare_third_party = False
@@ -233,6 +235,7 @@ def main():
         pareto_gif_path=join("tests", "pareto_front_pinn.gif"),
         pareto_gif_fps=1,
         pareto_gif_repeat_last=True,
+        pareto_limits=args.pareto_limits,
     )
 
     end_time = time.time()

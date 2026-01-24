@@ -44,6 +44,7 @@ class HybridPinnOrchestrator:
         pareto_gif_fps=1,
         pareto_gif_repeat_last=True,
         pareto_axis_labels=None,
+        pareto_limits=None,
     ):
         """
         Run the hybrid training loop.
@@ -65,6 +66,7 @@ class HybridPinnOrchestrator:
                 repeat_last=pareto_gif_repeat_last,
                 xlabel=pareto_axis_labels[0],
                 ylabel=pareto_axis_labels[1],
+                axes_limits=pareto_limits,
             )
 
         if verbose:
