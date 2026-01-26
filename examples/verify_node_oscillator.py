@@ -228,7 +228,7 @@ def main():
         nsga_gens_per_epoch=args.nsga_gens,
         pop_size=args.pop_size,
         verbose=args.verbose,
-        pareto_gif_path=join("tests", "pareto_front_node.gif"),
+        pareto_gif_path=join("examples", "pareto_front_node.gif"),
         pareto_gif_fps=1,
         pareto_gif_repeat_last=True,
         pareto_limits=args.pareto_limits,
