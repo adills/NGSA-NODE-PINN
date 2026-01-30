@@ -47,8 +47,111 @@ class HybridNodeOrchestrator:
         pareto_limits=None,
     ):
         """
-        Run the hybrid training loop for NODE.
+        Run the hybrid training loop for NODE (ADAM phase then NSGA phase).
         """
+        return self._train_loop(
+            epochs=epochs,
+            adam_steps_per_epoch=adam_steps_per_epoch,
+            nsga_gens_per_epoch=nsga_gens_per_epoch,
+            pop_size=pop_size,
+            verbose=verbose,
+            adapt_adam_steps=adapt_adam_steps,
+            min_adam_steps=min_adam_steps,
+            max_adam_steps=max_adam_steps,
+            improvement_window=improvement_window,
+            nsga_improve_threshold=nsga_improve_threshold,
+            adam_improve_threshold=adam_improve_threshold,
+            nsga_stagnation_threshold=nsga_stagnation_threshold,
+            nsga_noise_threshold=nsga_noise_threshold,
+            warmup_epochs_on_stagnation=warmup_epochs_on_stagnation,
+            adam_step_adjust=adam_step_adjust,
+            pareto_gif_path=pareto_gif_path,
+            pareto_gif_fps=pareto_gif_fps,
+            pareto_gif_repeat_last=pareto_gif_repeat_last,
+            pareto_axis_labels=pareto_axis_labels,
+            pareto_limits=pareto_limits,
+            phase_order="adam-first",
+        )
+
+    def train_nsga_first(
+        self,
+        epochs,
+        adam_steps_per_epoch,
+        nsga_gens_per_epoch,
+        pop_size=50,
+        verbose=True,
+        adapt_adam_steps=True,
+        min_adam_steps=1,
+        max_adam_steps=50,
+        improvement_window=3,
+        nsga_improve_threshold=0.02,
+        adam_improve_threshold=0.001,
+        nsga_stagnation_threshold=0.005,
+        nsga_noise_threshold=0.1,
+        warmup_epochs_on_stagnation=0,
+        adam_step_adjust=1,
+        pareto_gif_path=None,
+        pareto_gif_fps=1,
+        pareto_gif_repeat_last=True,
+        pareto_axis_labels=None,
+        pareto_limits=None,
+    ):
+        """
+        Run the hybrid training loop for NODE (NSGA phase then ADAM phase).
+        """
+        return self._train_loop(
+            epochs=epochs,
+            adam_steps_per_epoch=adam_steps_per_epoch,
+            nsga_gens_per_epoch=nsga_gens_per_epoch,
+            pop_size=pop_size,
+            verbose=verbose,
+            adapt_adam_steps=adapt_adam_steps,
+            min_adam_steps=min_adam_steps,
+            max_adam_steps=max_adam_steps,
+            improvement_window=improvement_window,
+            nsga_improve_threshold=nsga_improve_threshold,
+            adam_improve_threshold=adam_improve_threshold,
+            nsga_stagnation_threshold=nsga_stagnation_threshold,
+            nsga_noise_threshold=nsga_noise_threshold,
+            warmup_epochs_on_stagnation=warmup_epochs_on_stagnation,
+            adam_step_adjust=adam_step_adjust,
+            pareto_gif_path=pareto_gif_path,
+            pareto_gif_fps=pareto_gif_fps,
+            pareto_gif_repeat_last=pareto_gif_repeat_last,
+            pareto_axis_labels=pareto_axis_labels,
+            pareto_limits=pareto_limits,
+            phase_order="nsga-first",
+        )
+
+    def _train_loop(
+        self,
+        epochs,
+        adam_steps_per_epoch,
+        nsga_gens_per_epoch,
+        pop_size=50,
+        verbose=True,
+        adapt_adam_steps=True,
+        min_adam_steps=1,
+        max_adam_steps=50,
+        improvement_window=3,
+        nsga_improve_threshold=0.02,
+        adam_improve_threshold=0.001,
+        nsga_stagnation_threshold=0.005,
+        nsga_noise_threshold=0.1,
+        warmup_epochs_on_stagnation=0,
+        adam_step_adjust=1,
+        pareto_gif_path=None,
+        pareto_gif_fps=1,
+        pareto_gif_repeat_last=True,
+        pareto_axis_labels=None,
+        pareto_limits=None,
+        phase_order="adam-first",
+    ):
+        """
+        Run the hybrid training loop for NODE in a configurable phase order.
+        """
+        if phase_order not in {"adam-first", "nsga-first"}:
+            raise ValueError("phase_order must be 'adam-first' or 'nsga-first'.")
         history = []
         adam_loss_history = []
         adam_improve_history = []
@@ -78,82 +181,98 @@ class HybridNodeOrchestrator:
             pbar = tqdm(range(epochs), desc=desc, unit="Epoch")
             epoch_iter = pbar
 
+        phase_sequence = ("adam", "nsga") if phase_order == "adam-first" else ("nsga", "adam")
+
         for epoch in epoch_iter:
-            # --- ADAM Phase ---
-            self.model.train()
-            adam_loss_accum = 0.0
+            adam_steps_used = adam_steps_per_epoch
+            avg_adam_loss = 0.0
             schedule_action = None
+            res = None
+            nsga_best_f = [np.nan, np.nan]
+            nsga_best_sum = np.nan
 
-            with adam_update_context():
-                for i in range(adam_steps_per_epoch):
-                    self.optimizer.zero_grad()
+            def run_adam_phase():
+                nonlocal avg_adam_loss
+                self.model.train()
+                adam_loss_accum = 0.0
 
-                    # Evaluate module directly (Graph attached)
-                    loss_tuple = self.evaluator.evaluate_module(self.model)
+                with adam_update_context():
+                    for _ in range(adam_steps_used):
+                        self.optimizer.zero_grad()
 
-                    # Scalarize: Simple Sum (Data + Correction)
-                    total_loss = loss_tuple[0] + loss_tuple[1]
+                        # Evaluate module directly (Graph attached)
+                        loss_tuple = self.evaluator.evaluate_module(self.model)
 
-                    total_loss.backward()
-                    self.optimizer.step()
-                    adam_loss_accum += total_loss.item()
+                        # Scalarize: Simple Sum (Data + Correction)
+                        total_loss = loss_tuple[0] + loss_tuple[1]
 
-            avg_adam_loss = adam_loss_accum / max(1, adam_steps_per_epoch)
-            if adam_loss_history:
-                prev_adam_loss = adam_loss_history[-1]
-                adam_improve = (prev_adam_loss - avg_adam_loss) / max(prev_adam_loss, 1e-12)
-                adam_improve_history.append(adam_improve)
-            adam_loss_history.append(avg_adam_loss)
+                        total_loss.backward()
+                        self.optimizer.step()
+                        adam_loss_accum += total_loss.item()
 
-            # --- NSGA Phase ---
-            if skip_nsga_epochs_remaining > 0 or nsga_gens_per_epoch <= 0:
-                if skip_nsga_epochs_remaining > 0:
-                    skip_nsga_epochs_remaining -= 1
-                res = None
-                nsga_best_f = [np.nan, np.nan]
-                nsga_best_sum = np.nan
-            else:
-                # 1. Get current genome
-                current_genome = self.interface.to_genome(self.model)
+                avg_adam_loss = adam_loss_accum / max(1, adam_steps_used)
+                if adam_loss_history:
+                    prev_adam_loss = adam_loss_history[-1]
+                    adam_improve = (prev_adam_loss - avg_adam_loss) / max(prev_adam_loss, 1e-12)
+                    adam_improve_history.append(adam_improve)
+                adam_loss_history.append(avg_adam_loss)
 
-                # 2. Setup Problem
-                problem = self.problem_cls(self.evaluator, current_genome, bounds_radius=0.1)
-
-                # 3. Run NSGA-II
-                algorithm = NSGA2(pop_size=pop_size)
-
-                res = minimize(
-                    problem,
-                    algorithm,
-                    ('n_gen', nsga_gens_per_epoch),
-                    verbose=False
-                )
-
-                # --- Handoff ---
-                if res.F is not None and len(res.F) > 0:
-                    best_genome = self.selector.select_knee_point(res.X, res.F)
-
-                    # Load weights
-                    state_dict = self.interface.genome_to_state_dict(best_genome)
-                    self.model.load_state_dict(state_dict)
-
-                    # Reset Optimizer
-                    self.optimizer = self._create_optimizer()
-
-                    nsga_best_f = res.F.min(axis=0)
-                    nsga_best_sum = float(np.min(res.F.sum(axis=1)))
-                else:
+            def run_nsga_phase():
+                nonlocal res, nsga_best_f, nsga_best_sum, skip_nsga_epochs_remaining
+                if skip_nsga_epochs_remaining > 0 or nsga_gens_per_epoch <= 0:
+                    if skip_nsga_epochs_remaining > 0:
+                        skip_nsga_epochs_remaining -= 1
+                    res = None
                     nsga_best_f = [np.nan, np.nan]
                     nsga_best_sum = np.nan
+                else:
+                    # 1. Get current genome
+                    current_genome = self.interface.to_genome(self.model)
 
-            if np.isfinite(nsga_best_sum):
-                if nsga_best_sum_history:
-                    prev_nsga_best_sum = nsga_best_sum_history[-1]
-                    nsga_improve = (
-                        (prev_nsga_best_sum - nsga_best_sum) / max(prev_nsga_best_sum, 1e-12)
+                    # 2. Setup Problem
+                    problem = self.problem_cls(self.evaluator, current_genome, bounds_radius=0.1)
+
+                    # 3. Run NSGA-II
+                    algorithm = NSGA2(pop_size=pop_size)
+
+                    res = minimize(
+                        problem,
+                        algorithm,
+                        ('n_gen', nsga_gens_per_epoch),
+                        verbose=False
                     )
-                    nsga_improve_history.append(nsga_improve)
-                nsga_best_sum_history.append(nsga_best_sum)
+
+                    # --- Handoff ---
+                    if res.F is not None and len(res.F) > 0:
+                        best_genome = self.selector.select_knee_point(res.X, res.F)
+
+                        # Load weights
+                        state_dict = self.interface.genome_to_state_dict(best_genome)
+                        self.model.load_state_dict(state_dict)
+
+                        # Reset Optimizer
+                        self.optimizer = self._create_optimizer()
+
+                        nsga_best_f = res.F.min(axis=0)
+                        nsga_best_sum = float(np.min(res.F.sum(axis=1)))
+                    else:
+                        nsga_best_f = [np.nan, np.nan]
+                        nsga_best_sum = np.nan
+
+                if np.isfinite(nsga_best_sum):
+                    if nsga_best_sum_history:
+                        prev_nsga_best_sum = nsga_best_sum_history[-1]
+                        nsga_improve = (
+                            (prev_nsga_best_sum - nsga_best_sum) / max(prev_nsga_best_sum, 1e-12)
+                        )
+                        nsga_improve_history.append(nsga_improve)
+                    nsga_best_sum_history.append(nsga_best_sum)
+
+            for phase in phase_sequence:
+                if phase == "adam":
+                    run_adam_phase()
+                else:
+                    run_nsga_phase()
 
             # Schedule Adaptation
             if adapt_adam_steps:
@@ -206,7 +325,7 @@ class HybridNodeOrchestrator:
                     pareto_recorder.record(pop_f=None, front_f=None, epoch=epoch)
 
             if verbose:
-                step_info = f"steps={adam_steps_per_epoch}"
+                step_info = f"steps={adam_steps_used}"
                 action_info = f", schedule={schedule_action}" if schedule_action else ""
                 print(
                     f"Epoch {epoch}: ADAM Loss={avg_adam_loss:.6f}, "
@@ -215,7 +334,7 @@ class HybridNodeOrchestrator:
             elif pbar is not None:
                 stats = {
                     "adam": f"{avg_adam_loss:.3f}",
-                    "steps": adam_steps_per_epoch,
+                    "steps": adam_steps_used,
                 }
                 if nsga_gens_per_epoch > 0 and res is not None:
                     stats["F"] = f"[{nsga_best_f[0]:.3f},{nsga_best_f[1]:.3f}]"
@@ -229,6 +348,7 @@ class HybridNodeOrchestrator:
                 'nsga_front': nsga_front,
                 'nsga_best_f': nsga_best_f,
                 'adam_steps_per_epoch': adam_steps_per_epoch,
+                'adam_steps_used': adam_steps_used,
                 'nsga_ran': res is not None,
                 'schedule_action': schedule_action
             })
