@@ -173,6 +173,12 @@ def main():
     parser.add_argument("--output_plot", type=str, default="examples/node_oscillator_comparison.png")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--pareto_limits", nargs=2, type=float, default=None)
+    parser.add_argument(
+        "--phase_order",
+        choices=["adam-first", "nsga-first", "both"],
+        default="both",
+        help="Phase order for hybrid training.",
+    )
 
     args = parser.parse_args()
 
@@ -197,53 +203,86 @@ def main():
 
     y_true = torch.tensor(np.stack([x_true_np, v_true_np], axis=1), dtype=torch.float32).to(device)
 
-    # 2. Setup Models
-    hybrid_model = OscillatorModel().to(device)
+    # 2. Setup Models (shared init)
+    base_model = OscillatorModel().to(device)
+    hybrid_adam_model = OscillatorModel().to(device)
+    hybrid_nsga_model = OscillatorModel().to(device)
     baseline_model = OscillatorModel().to(device) # Pure ADAM
-    # Ensure same init?
-    baseline_model.load_state_dict(hybrid_model.state_dict())
+    hybrid_adam_model.load_state_dict(base_model.state_dict())
+    hybrid_nsga_model.load_state_dict(base_model.state_dict())
+    baseline_model.load_state_dict(base_model.state_dict())
 
-    interface = PytorchGenomeInterface(hybrid_model)
+    interface_adam = PytorchGenomeInterface(hybrid_adam_model)
+    interface_nsga = PytorchGenomeInterface(hybrid_nsga_model)
+    interface_base = PytorchGenomeInterface(baseline_model)
 
     # 3. Setup Evaluators
-    evaluator_hybrid = VectorizedNodeEvaluator(
-        hybrid_model, interface, t_train, y0_train, y_true,
+    evaluator_hybrid_adam = VectorizedNodeEvaluator(
+        hybrid_adam_model, interface_adam, t_train, y0_train, y_true,
+        correction_fn=get_correction_term
+    )
+    evaluator_hybrid_nsga = VectorizedNodeEvaluator(
+        hybrid_nsga_model, interface_nsga, t_train, y0_train, y_true,
         correction_fn=get_correction_term
     )
 
-    # 4. Train Hybrid
-    print(f"\n--- Training Hybrid NSGA-NODE, GA generations: {args.nsga_gens} ---")
+    # 4. Train Hybrid (ADAM-first and/or NSGA-first)
     problem_cls = NsgaNodeProblem
     selector = ParetoSelector()
+    hist_hybrid_adam = None
+    hist_hybrid_nsga = None
+    hybrid_adam_time = 0.0
+    hybrid_nsga_time = 0.0
 
-    orchestrator = HybridNodeOrchestrator(
-        hybrid_model, interface, evaluator_hybrid, problem_cls, selector,
-        optimizer_kwargs={'lr': 0.01}
-    )
+    if args.phase_order in {"adam-first", "both"}:
+        print(f"\n--- Training Hybrid NSGA-NODE (ADAM-first), GA generations: {args.nsga_gens} ---")
+        orchestrator_adam = HybridNodeOrchestrator(
+            hybrid_adam_model, interface_adam, evaluator_hybrid_adam, problem_cls, selector,
+            optimizer_kwargs={'lr': 0.01}
+        )
+        start_time = time.time()
+        hist_hybrid_adam = orchestrator_adam.train(
+            epochs=args.epochs,
+            adam_steps_per_epoch=args.adam_steps,
+            nsga_gens_per_epoch=args.nsga_gens,
+            pop_size=args.pop_size,
+            verbose=args.verbose,
+            pareto_gif_path=join("examples", "pareto_front_node_adam_first.gif"),
+            pareto_gif_fps=1,
+            pareto_gif_repeat_last=True,
+            pareto_limits=args.pareto_limits,
+        )
+        hybrid_adam_time = time.time() - start_time
+        print(f"Hybrid (ADAM-first) Time: {hybrid_adam_time:.2f}s")
 
-    start_time = time.time()
-    hist_hybrid = orchestrator.train(
-        epochs=args.epochs,
-        adam_steps_per_epoch=args.adam_steps,
-        nsga_gens_per_epoch=args.nsga_gens,
-        pop_size=args.pop_size,
-        verbose=args.verbose,
-        pareto_gif_path=join("examples", "pareto_front_node.gif"),
-        pareto_gif_fps=1,
-        pareto_gif_repeat_last=True,
-        pareto_limits=args.pareto_limits,
-    )
-    hybrid_time = time.time() - start_time
-    print(f"Hybrid Time: {hybrid_time:.2f}s")
+    if args.phase_order in {"nsga-first", "both"}:
+        print(f"\n--- Training Hybrid NSGA-NODE (NSGA-first), GA generations: {args.nsga_gens} ---")
+        orchestrator_nsga = HybridNodeOrchestrator(
+            hybrid_nsga_model, interface_nsga, evaluator_hybrid_nsga, problem_cls, selector,
+            optimizer_kwargs={'lr': 0.01}
+        )
+        start_time = time.time()
+        hist_hybrid_nsga = orchestrator_nsga.train_nsga_first(
+            epochs=args.epochs,
+            adam_steps_per_epoch=args.adam_steps,
+            nsga_gens_per_epoch=args.nsga_gens,
+            pop_size=args.pop_size,
+            verbose=args.verbose,
+            pareto_gif_path=join("examples", "pareto_front_node_nsga_first.gif"),
+            pareto_gif_fps=1,
+            pareto_gif_repeat_last=True,
+            pareto_limits=args.pareto_limits,
+        )
+        hybrid_nsga_time = time.time() - start_time
+        print(f"Hybrid (NSGA-first) Time: {hybrid_nsga_time:.2f}s")
 
     # 5. Train Baseline (Pure ADAM)
     print("\n--- Training Baseline (Pure ADAM) ---")
     # We can use the same orchestrator but with 0 NSGA gens
     # But we need a separate orchestrator instance/model
 
-    baseline_interface = PytorchGenomeInterface(baseline_model)
     evaluator_baseline = VectorizedNodeEvaluator(
-        baseline_model, baseline_interface, t_train, y0_train, y_true,
+        baseline_model, interface_base, t_train, y0_train, y_true,
         correction_fn=get_correction_term
     )
 
@@ -256,7 +295,7 @@ def main():
     # Let's match the number of ADAM steps per epoch.
 
     orchestrator_baseline = HybridNodeOrchestrator(
-        baseline_model, baseline_interface, evaluator_baseline, problem_cls, selector,
+        baseline_model, interface_base, evaluator_baseline, problem_cls, selector,
         optimizer_kwargs={'lr': 0.01}
     )
 
@@ -278,7 +317,7 @@ def main():
     xi = 0.5
     x0 = 1.0
     v0 = 0.0
-    classical_steps = args.epochs * args.adam_steps
+    classical_steps = args.epochs
     start_time = time.time()
     classical_model = train_classical_baseline(
         t_train.view(-1, 1),
@@ -305,15 +344,16 @@ def main():
     # 7. Evaluation & Statistics
     print("\n--- Evaluation ---")
 
-    def evaluate_model(mod, name):
+    def evaluate_model(mod, evaluator):
         # Predict on same t_train
         with torch.no_grad():
             # Use evaluator helper
             # returns (Data, Correction)
-            loss = evaluator_baseline.evaluate_module(mod) # Reusing evaluator as it's stateless w.r.t model instance passed to evaluate_module
+            loss = evaluator.evaluate_module(mod) # Reusing evaluator as it's stateless w.r.t model instance passed to evaluate_module
             # Wait, evaluate_module uses self.dynamics which wraps self.model_template.
             # Evaluator is bound to a specific model_template instance.
-            # So evaluator_hybrid is bound to hybrid_model.
+            # So evaluator_hybrid_adam is bound to hybrid_adam_model.
+            # evaluator_hybrid_nsga is bound to hybrid_nsga_model.
             # evaluator_baseline is bound to baseline_model.
             pass
 
@@ -324,15 +364,12 @@ def main():
         # VectorizedNodeEvaluator doesn't expose 'predict'.
         # Let's use the underlying dynamics wrapper and torchode manually.
 
-        wrapper = evaluator_baseline.dynamics # same wrapper class
+        wrapper = evaluator.dynamics # same wrapper class
         # But wait, evaluator_baseline.dynamics is bound to baseline_model.
         # We need a wrapper bound to 'mod'.
 
         # Just use evaluator corresponding to the model
-        if mod is hybrid_model:
-            ev = evaluator_hybrid
-        else:
-            ev = evaluator_baseline
+        ev = evaluator
 
         # Access internal solve (hacky but quick)
         # Re-instantiate needed parts
@@ -364,18 +401,65 @@ def main():
 
         return ys.detach().cpu().numpy(), mse, tail_mean.detach().cpu().numpy(), tail_std.detach().cpu().numpy()
 
-    y_hybrid, mse_hybrid, tm_hybrid, ts_hybrid = evaluate_model(hybrid_model, "Hybrid")
-    y_base, mse_base, tm_base, ts_base = evaluate_model(baseline_model, "Baseline")
-    mse_classical = torch.mean((y_classical_t - y_true) ** 2).item()
-    hybrid_steps = sum(item["adam_steps_per_epoch"] for item in hist_hybrid)
-    baseline_steps = sum(item["adam_steps_per_epoch"] for item in hist_baseline)
+    y_hybrid_adam = None
+    y_hybrid_nsga = None
+    mse_hybrid_adam = None
+    mse_hybrid_nsga = None
+    tm_hybrid_adam = None
+    ts_hybrid_adam = None
+    tm_hybrid_nsga = None
+    ts_hybrid_nsga = None
 
-    print(f"Hybrid NODE MSE   ({hybrid_steps:04d} ADAM Steps, {hybrid_time:6.2f}s): {mse_hybrid:.4f}")
+    if hist_hybrid_adam is not None:
+        (
+            y_hybrid_adam,
+            mse_hybrid_adam,
+            tm_hybrid_adam,
+            ts_hybrid_adam,
+        ) = evaluate_model(hybrid_adam_model, evaluator_hybrid_adam)
+
+    if hist_hybrid_nsga is not None:
+        (
+            y_hybrid_nsga,
+            mse_hybrid_nsga,
+            tm_hybrid_nsga,
+            ts_hybrid_nsga,
+        ) = evaluate_model(hybrid_nsga_model, evaluator_hybrid_nsga)
+
+    y_base, mse_base, tm_base, ts_base = evaluate_model(baseline_model, evaluator_baseline)
+    mse_classical = torch.mean((y_classical_t - y_true) ** 2).item()
+    hybrid_adam_steps = (
+        sum(item.get("adam_steps_used", item["adam_steps_per_epoch"]) for item in hist_hybrid_adam)
+        if hist_hybrid_adam is not None
+        else 0
+    )
+    hybrid_nsga_steps = (
+        sum(item.get("adam_steps_used", item["adam_steps_per_epoch"]) for item in hist_hybrid_nsga)
+        if hist_hybrid_nsga is not None
+        else 0
+    )
+    baseline_steps = sum(item.get("adam_steps_used", item["adam_steps_per_epoch"]) for item in hist_baseline)
+
+    if mse_hybrid_adam is not None:
+        print(
+            f"Hybrid NODE (ADAM-first) MSE   ({hybrid_adam_steps:04d} ADAM Steps, "
+            f"{hybrid_adam_time:6.2f}s): {mse_hybrid_adam:.4f}"
+        )
+    if mse_hybrid_nsga is not None:
+        print(
+            f"Hybrid NODE (NSGA-first) MSE   ({hybrid_nsga_steps:04d} ADAM Steps, "
+            f"{hybrid_nsga_time:6.2f}s): {mse_hybrid_nsga:.4f}"
+        )
     print(f"Baseline NODE MSE ({baseline_steps:04d} ADAM Steps, {baseline_time:6.2f}s): {mse_base:.4f}")
     print(f"Classical NN MSE  ({classical_steps:04d} ADAM Steps, {classical_time:6.2f}s): {mse_classical:.4f}")
-    formatted_list_m = ' '.join(f"{num:7.4f}" for num in tm_hybrid)
-    formatted_list_s = ' '.join(f"{num:7.4f}" for num in ts_hybrid)
-    print(f"Hybrid NODE Tail Mean: {formatted_list_m}, Std: {formatted_list_s}")
+    if tm_hybrid_adam is not None:
+        formatted_list_m = ' '.join(f"{num:7.4f}" for num in tm_hybrid_adam)
+        formatted_list_s = ' '.join(f"{num:7.4f}" for num in ts_hybrid_adam)
+        print(f"Hybrid NODE (ADAM-first) Tail Mean: {formatted_list_m}, Std: {formatted_list_s}")
+    if tm_hybrid_nsga is not None:
+        formatted_list_m = ' '.join(f"{num:7.4f}" for num in tm_hybrid_nsga)
+        formatted_list_s = ' '.join(f"{num:7.4f}" for num in ts_hybrid_nsga)
+        print(f"Hybrid NODE (NSGA-first) Tail Mean: {formatted_list_m}, Std: {formatted_list_s}")
     formatted_list_m = ' '.join(f"{num:7.4f}" for num in tm_base)
     formatted_list_s = ' '.join(f"{num:7.4f}" for num in ts_base)
     print(f"Baseline NODE Tail Mean: {formatted_list_m}, Std: {formatted_list_s}")
@@ -386,11 +470,76 @@ def main():
     formatted_list = ' '.join(f"{num:7.4f}" for num in exact_tail)
     print(f"Exact Tail Mean: {formatted_list}")
 
+    def format_time_cell(seconds):
+        minutes = seconds / 60.0
+        if minutes >= 1.0:
+            return f"{minutes:.2f}"
+        return f"{seconds:.2f}s"
+
+    def format_int_cell(value):
+        if value is None:
+            return "NA"
+        return f"{int(round(value))}"
+
+    summary_rows = []
+    if mse_hybrid_adam is not None:
+        inner_adams = hybrid_adam_steps / max(1, args.epochs)
+        summary_rows.append({
+            "method": "ADAM-first",
+            "mse": f"{mse_hybrid_adam:.4f}",
+            "total_adams": format_int_cell(hybrid_adam_steps),
+            "outer_adams": format_int_cell(args.epochs),
+            "inner_adams": format_int_cell(inner_adams),
+            "inner_nsga": format_int_cell(args.nsga_gens),
+            "time": format_time_cell(hybrid_adam_time),
+        })
+    if mse_hybrid_nsga is not None:
+        inner_adams = hybrid_nsga_steps / max(1, args.epochs)
+        summary_rows.append({
+            "method": "NSGA-first",
+            "mse": f"{mse_hybrid_nsga:.4f}",
+            "total_adams": format_int_cell(hybrid_nsga_steps),
+            "outer_adams": format_int_cell(args.epochs),
+            "inner_adams": format_int_cell(inner_adams),
+            "inner_nsga": format_int_cell(args.nsga_gens),
+            "time": format_time_cell(hybrid_nsga_time),
+        })
+    summary_rows.append({
+        "method": "NODE base",
+        "mse": f"{mse_base:.4f}",
+        "total_adams": format_int_cell(baseline_steps),
+        "outer_adams": "NA",
+        "inner_adams": "NA",
+        "inner_nsga": "NA",
+        "time": format_time_cell(baseline_time),
+    })
+    summary_rows.append({
+        "method": "NN classic",
+        "mse": f"{mse_classical:.4f}",
+        "total_adams": format_int_cell(classical_steps),
+        "outer_adams": "NA",
+        "inner_adams": "NA",
+        "inner_nsga": "NA",
+        "time": format_time_cell(classical_time),
+    })
+
+    print("\n--- Summary (MSE) ---")
+    print("| Method | MSE | Total ADAMs | Outer ADAMs | Inner ADAMs | Inner NSGA | Time (min) |")
+    print("|:------ |:---:|:-----------:|:-----------:|:-----------:|:----------:|:----------:|")
+    for row in summary_rows:
+        print(
+            "| {method} | {mse} | {total_adams} | {outer_adams} | "
+            "{inner_adams} | {inner_nsga} | {time} |".format(**row)
+        )
+
     # 7. Plotting
     try:
         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
         ax.plot(t_np, x_true_np, 'k-', label='Exact', linewidth=2)
-        ax.plot(t_np, y_hybrid[:, 0], 'r--', label='NSGA-NODE', linewidth=2)
+        if y_hybrid_adam is not None:
+            ax.plot(t_np, y_hybrid_adam[:, 0], 'r--', label='NSGA-NODE (ADAM-first)', linewidth=2)
+        if y_hybrid_nsga is not None:
+            ax.plot(t_np, y_hybrid_nsga[:, 0], 'm--', label='NSGA-NODE (NSGA-first)', linewidth=2)
         ax.plot(t_np, y_base[:, 0], 'b:', label='Baseline (ADAM)', linewidth=2)
         ax.plot(t_np, y_classical[:, 0], 'g-.', label='Classical NN Baseline', linewidth=2)
 
